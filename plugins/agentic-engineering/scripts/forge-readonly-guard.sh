@@ -203,9 +203,14 @@ GH_API_FIELD_FLAGS=" -f --raw-field -F --field --input "
 #   --jq / -q      a jq program (`-1`, `-(.x)`) run by gh's embedded jq; its reach into
 #                  the process environment is refused separately by check_gh_flag_value
 #   --template/-t  a Go template rendered locally, with no exec or file primitive
-#   git --grep, -S, -G   a regex or pickaxe string matched against history
+#   git --grep, -S, -G, --author, --committer   a regex or pickaxe string matched
+#                  against history (`--author -bot` matches authors containing `-bot`)
+#   git --since, --until, --after, --before     a date expression, which git's
+#                  approxidate parser accepts in free form (`--since -yesterday`)
+# Everything else — a count, a path, a ref, a format name — has a grammar no
+# dash-letter word can satisfy, so a flag-shaped value there is denied by name.
 GH_DASH_VALUE_FLAGS=" --search --jq -q --template -t "
-GIT_DASH_VALUE_FLAGS=" --grep -S -G "
+GIT_DASH_VALUE_FLAGS=" --grep -S -G --author --committer --since --until --after --before "
 
 # git options. Read verbs are not enough on their own: several options make git
 # write a file or execute a program without any shell syntax for the scanner to

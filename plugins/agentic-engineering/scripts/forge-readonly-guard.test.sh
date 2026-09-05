@@ -123,8 +123,8 @@ expect_deny_names 'gh api --method does not swallow --web' \
   "gh api repos/devantler-tech/monorepo/pulls --method --web" "--web"
 expect_deny_names 'gh api -H does not swallow --hostname' \
   "gh api repos/devantler-tech/monorepo/pulls -H --hostname" "--hostname"
-expect_deny_names 'git --since does not swallow --work-tree' \
-  "git log --oneline --since --work-tree" "--work-tree"
+expect_deny_names 'git --max-count does not swallow --work-tree' \
+  "git log --oneline --max-count --work-tree" "--work-tree"
 # The rule is per flag family, not a blanket ban on dash-leading values: a search
 # expression, a jq program and a git grep pattern legitimately begin with a dash, and
 # none of them can name a program, a host, or a file.
@@ -142,7 +142,16 @@ expect_allow 'git -n takes a negative number' "git log --oneline -n -1"
 expect_allow 'git --since takes a relative date beginning with a dash' \
   "git log --oneline --since -1.day"
 expect_deny_names 'a negative number does not widen the rule to letters' \
-  "git log --oneline --since -x --work-tree" "-x"
+  "git log --oneline --max-count -x --work-tree" "-x"
+# git's pattern and date flags take free-form values that may begin with a dash:
+# `--author -bot` is a regex over authors and `--since -yesterday` is an approxidate
+# expression, both accepted by git as separated forms. A count is not free-form.
+expect_allow 'git --author takes a dash-leading regex' "git log --oneline --author -bot"
+expect_allow 'git --committer takes a dash-leading regex' "git log --oneline --committer -bot"
+expect_allow 'git --since takes a dash-leading date expression' \
+  "git log --oneline --since -yesterday"
+expect_allow 'git --until takes a dash-leading date expression' \
+  "git log --oneline --until -yesterday"
 expect_allow 'issue list' "gh issue list --repo devantler-tech/ksail --state open --limit 200"
 expect_allow 'search issues' "gh search issues --owner devantler-tech --state open --limit 300"
 expect_allow 'search prs' "gh search prs --owner devantler-tech --state open"
