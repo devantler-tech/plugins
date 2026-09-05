@@ -27,7 +27,7 @@
     {
       "name": "agentic-engineering",
       "description": "The autonomous engineering system for repository portfolios — engineer, read-only surveyor, and meta-engineer agents; portfolio, product, spend, and improvement workflows; cross-tool instruction architecture and skill discovery; configured by the consumer AGENTS.md",
-      "version": "4.4.24",
+      "version": "4.4.25",
       "source": "./plugins/agentic-engineering"
     },
     {
