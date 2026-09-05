@@ -53,12 +53,33 @@ while IFS= read -r plugin_dir; do
     continue
   fi
 
-  # Absent at the base means this change introduces the plugin — nothing to bump from.
-  if ! base_version=$(git show "$base_sha:$plugin_dir/$MANIFEST_REL" 2>/dev/null | jq -r '.version // empty'); then
-    base_version=""
+  # Absent at the base means this change introduces the plugin — nothing to bump from. But
+  # ABSENT and UNREADABLE are different answers, and `git show` fails the same way for both:
+  # in a partial clone a promisor-object fetch failure looks exactly like a missing path, and
+  # reading that as "new plugin" lets the gate pass on a plugin that already ships. So ask the
+  # base TREE whether the manifest exists (trees are present even when blobs are not), and only
+  # then read it — a read that fails on a listed manifest is an error, never a pass.
+  if ! base_entry=$(git ls-tree "$base_sha" -- "$plugin_dir/$MANIFEST_REL" 2>&1); then
+    echo "::error::$plugin_dir/$MANIFEST_REL: could not list the base tree at ${base_sha:0:12}: $base_entry"
+    echo "::error::The base revision must be readable for this gate to decide anything; fetch it fully and re-run."
+    exit 1
   fi
-  if [ -z "$base_version" ]; then
+  if [ -z "$base_entry" ]; then
     echo "✓ $name is new in this change (version $head_version)"
+    continue
+  fi
+  if ! base_manifest=$(git show "$base_sha:$plugin_dir/$MANIFEST_REL" 2>&1); then
+    echo "::error::$plugin_dir/$MANIFEST_REL: exists at ${base_sha:0:12} but could not be read: $base_manifest"
+    echo "::error::Refusing to treat an unreadable base manifest as a new plugin — the version gate would pass on a plugin that already ships."
+    echo "::error::Make the base revision's objects available (a full or --refetch'd clone, not a partial one) and re-run."
+    exit 1
+  fi
+  base_version=$(printf '%s\n' "$base_manifest" | jq -r '.version // empty')
+  if [ -z "$base_version" ]; then
+    # The manifest exists at the base but carries no version: there is nothing to compare
+    # against, so the head version is by definition a move. validate-manifests.sh owns the
+    # shape of the manifest itself.
+    echo "✓ $name had no version at the base; head version $head_version is a move"
     continue
   fi
 

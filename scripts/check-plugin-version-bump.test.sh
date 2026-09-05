@@ -162,6 +162,35 @@ commit_all "$d" "content, no bump"
 check_fail "an unresolvable base ref fails closed" \
   "Cannot resolve a merge base" "$d" "origin/does-not-exist"
 
+# An UNREADABLE base manifest is not an ABSENT one (#167). In a partial clone a promisor-object
+# fetch failure makes `git show base:<manifest>` fail exactly like a missing path would, and
+# treating that as "new plugin" lets the gate pass on a plugin that already ships. Reproduce the
+# shape hermetically: the base tree still lists the manifest, but its blob is gone.
+d=$(fresh)
+make_plugin "$d" alpha "1.0.0" "edited body"
+set_version "$d" alpha "1.0.1"
+commit_all "$d" "content + bump"
+blob=$(git -C "$d" rev-parse "main:plugins/alpha/.claude-plugin/plugin.json")
+rm -f "$d/.git/objects/${blob:0:2}/${blob:2}"
+# Control: the fixture must make the base manifest unreadable while its tree entry survives,
+# or the case below would pass for a reason other than the one it pins.
+if git -C "$d" show "main:plugins/alpha/.claude-plugin/plugin.json" >/dev/null 2>&1; then
+  echo "  ✗ fixture control: base manifest is still readable after removing its blob"; fail=$((fail + 1))
+elif [ -z "$(git -C "$d" ls-tree main -- "plugins/alpha/.claude-plugin/plugin.json")" ]; then
+  echo "  ✗ fixture control: base tree no longer lists the manifest"; fail=$((fail + 1))
+else
+  echo "  ✓ fixture control: base manifest listed but unreadable"; pass=$((pass + 1))
+fi
+check_fail "an unreadable base manifest fails closed instead of reading as a new plugin" \
+  "could not be read" "$d"
+
+# The genuinely-absent case must keep passing: the fix distinguishes the two, it does not
+# collapse them into one failure.
+d=$(fresh)
+make_plugin "$d" gamma "1.0.0"
+commit_all "$d" "new plugin"
+check_pass "a manifest genuinely absent at the base still reads as a new plugin" "$d"
+
 echo "-----------------------------------------"
 echo "check-plugin-version-bump.sh self-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

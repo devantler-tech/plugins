@@ -60,7 +60,7 @@
       "portfolio-surveyor": {
         "enabled": true,
         "mode": "delegated-read-only",
-        "definitionSha256": "7e163faece3626a6666b2cefbdc608aa80003e47b54842f20793f7b5110c8458"
+        "definitionSha256": "1ba8c5008f05720134182363be645a3be0108cc9f4f1a8f9f42601a662c2dcfa"
       },
       "agent-improver": {
         "enabledWhen": "Both optional consumer contract sections are present",
