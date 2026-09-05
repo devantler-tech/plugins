@@ -456,6 +456,7 @@ validate_desired_state_resources() {
   local portfolio_survey_maintainer_control_contract="Authenticated maintainer controls are mandatory evidence, not optional enrichment. Collect exact-login, non-AI-disclosed maintainer comments for every ownership-gated PR or Advance candidate before classifying or ranking it; a failed control-channel query makes only that candidate \`QUERY-UNKNOWN\`."
   local portfolio_survey_fail_closed_contract="An incomplete candidate can never be classified clean: no \`CLEAR\`, \`MERGE-READY\`, \`REVIEW-READY\`, or \"no signal\"."
   local portfolio_survey_call_shape_contract="**Every forge read is one command in one call.** The read-only guard refuses on shape before it ever inspects intent: output redirection, \`;\`, \`&\`, \`&&\`, a newline, command substitution, and any leading program that is neither a forge command nor a reviewed helper this definition names are all denied, so an ordinary shell idiom silently costs the read. Emit exactly one forge command per call and reduce it in-band with \`--paginate\` and \`--jq\`, or a pipe into the allowlisted read-only filters; never redirect to a scratch file. Sweep repositories with one call per repository or one org-wide search, never a \`for\` loop. Take every timestamp from a payload you already read, never from \`date\`. Select with \`--jq\` rather than \`grep -oE\` or \`xargs\`. A shape denial is a lost read that reads exactly like no evidence: mark the affected evidence \`QUERY-UNKNOWN\` and reissue in the admitted shape — never work around the guard."
+  local portfolio_survey_classifier_argv_contract="**Invoke the classifier only in its flag form, by its resolved installed path:** \`<installed plugin>/scripts/classify-default-branch-ci-runs.sh --repo OWNER/REPO --branch BRANCH --head-sha FULL_SHA\`. The helper and the read-only guard accept nothing else: the guard admits only that exact installed sibling path — never a bare basename, a \`PATH\` lookup, or a relative \`../scripts/\` form — and a positional \`OWNER/REPO BRANCH SHA\` is denied as \`not the guarded remote-mode shape\` while the helper itself exits 2 on it, so the first invocation must already carry the resolved path and all three flags."
 
   if [ -d plugins/agentic-engineering ]; then
     if [ ! -f "$canonical_resource" ]; then
@@ -1061,6 +1062,15 @@ validate_desired_state_resources() {
           resource_failed=1
           ;;
       esac
+      case "$normalized_surveyor" in
+        *"$portfolio_survey_classifier_argv_contract"*)
+          ;;
+        *)
+          echo "::error::$resource: portfolio-surveyor must state the classifier's flag-form argument shape"
+          failed=1
+          resource_failed=1
+          ;;
+      esac
     else
       echo "::error::$resource: portfolio-surveyor must preserve bounded resumable mandatory-query recovery"
       echo "::error::$resource: portfolio-surveyor must preserve immediate fail-closed handling for global failures"
@@ -1068,6 +1078,7 @@ validate_desired_state_resources() {
       echo "::error::$resource: portfolio-surveyor must preserve mandatory authenticated maintainer-control evidence"
       echo "::error::$resource: portfolio-surveyor must preserve candidate-scoped fail-closed dispositions"
       echo "::error::$resource: portfolio-surveyor must state the guard's admitted call shape"
+      echo "::error::$resource: portfolio-surveyor must state the classifier's flag-form argument shape"
       failed=1
       resource_failed=1
     fi

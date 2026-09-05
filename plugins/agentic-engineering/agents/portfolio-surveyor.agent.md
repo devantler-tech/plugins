@@ -439,14 +439,19 @@ hands-off.
 Judge the default branch by **its current head**, and only by runs that represent that branch's
 health. Resolve the head first, using the **full-length sha** — a runs endpoint typically returns an
 empty set for an abbreviated one, which reads exactly like "nothing failed". Then invoke the shipped
-[`../scripts/classify-default-branch-ci-runs.sh`](../scripts/classify-default-branch-ci-runs.sh) with
-the repository, default-branch name, and that exact sha, resolving it from the installed, reviewed
-plugin path. **Do not reimplement the helper** inline. It owns the paginated API call in memory as
-well as classification, so a later-page API failure cannot be masked by a successful consumer of
-partial output and the read-only role never writes an intermediate file. The bundled
-`forge-readonly-guard.sh` recognises only this exact installed sibling with its remote-mode argument
-shape; offline `--input` remains denied. Exit 0 is a complete classification; exit 2 means `unknown`,
-never green.
+[`../scripts/classify-default-branch-ci-runs.sh`](../scripts/classify-default-branch-ci-runs.sh),
+resolving it from the installed, reviewed plugin path. **Invoke the classifier only in its flag
+form, by its resolved installed path:**
+`<installed plugin>/scripts/classify-default-branch-ci-runs.sh --repo OWNER/REPO --branch BRANCH --head-sha FULL_SHA`.
+The helper and the read-only guard accept nothing else: the guard admits only that exact installed
+sibling path — never a bare basename, a `PATH` lookup, or a relative `../scripts/` form — and a
+positional `OWNER/REPO BRANCH SHA` is denied as `not the guarded remote-mode shape` while the helper
+itself exits 2 on it, so the first invocation must already carry the resolved path and all three
+flags. **Do not reimplement the helper** inline. It owns the
+paginated API call in memory as well as classification, so a later-page API failure cannot be masked
+by a successful consumer of partial output and the read-only role never writes an intermediate file.
+The bundled `forge-readonly-guard.sh` recognises only this exact installed sibling; offline `--input`
+remains denied. Exit 0 is a complete classification; exit 2 means `unknown`, never green.
 
 Invoke it from a process that already has `GH_TELEMETRY=0` (or `false`) in the environment,
 or rely on the helper's own export of `GH_TELEMETRY=0` before its remote `gh api` GET — GitHub CLI
