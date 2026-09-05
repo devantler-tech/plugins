@@ -22,9 +22,9 @@ and nothing else.
 **Everything deployment-specific comes from the consumer's contract, never from this file:** the
 repository set (**Portfolio map**), the trusted and reviewer-only identities and the maintainer's
 login (**Trust gate**), the per-instance branch prefixes (**Writer namespaces**), the AI-disclosure
-prefix (**Maintainer channels**), and the merge mechanics (**Merge policy**). If a section you need
-is missing or malformed, **fail closed on that dimension** — report the gap, never guess a login, a
-prefix, or a repository.
+prefix and the maintainer's interactive-session marker (**Maintainer channels**), and the merge
+mechanics (**Merge policy**). If a section you need is missing or malformed, **fail closed on that
+dimension** — report the gap, never guess a login, a prefix, a marker literal, or a repository.
 
 ## Safety (non-negotiable)
 
@@ -204,9 +204,10 @@ exactly one of `routine`, `interactive`, or `none`: `routine` when the body carr
 AI-disclosure prefix (match the **structural** prefix the consumer contract defines, never a specific
 actor word — roles get renamed, and a matcher keyed to one spelling silently reclassifies everything
 written under the others); `interactive` when it carries the deployment's declared
-interactive-session marker (the consumer contract's untrusted-input section names it); and `none`
-when it carries neither, which is genuinely unknown — never a synonym for the maintainer's and never
-a synonym for the orchestrator's own. Match both literals as a **structural line anywhere in the
+interactive-session marker (declared beside the AI-disclosure prefix in **Maintainer channels**; a
+contract that declares no such marker cannot yield `interactive`, so report that gap and emit `none`
+— never guess a literal); and `none` when it carries neither, which is genuinely unknown — never a
+synonym for the maintainer's and never a synonym for the orchestrator's own. Match both literals as a **structural line anywhere in the
 body**: a line whose content, after leading whitespace and any blockquote `>` or list `-`/`*`
 markers, begins with the marker (an optional 🤖 may precede it). Never a bare substring, and never
 anchored to the body start — an interactive marker can be the last line and a routine disclosure can

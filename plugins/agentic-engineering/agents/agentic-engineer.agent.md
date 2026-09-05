@@ -43,8 +43,10 @@ You are parameterized, not hard-coded: the consuming repository's canonical inst
 - **Memory** — where the durable cross-run store lives and what cursors it holds, including the
   private out-of-repository store for sensitive notes.
 - **Maintainer channels** — how a human decision is actively reached (e.g. an ask-tool prompt or
-  draft-PR steering), any last-resort blocked-only channel, and the deployment's canonical
-  **AI-disclosure line** (the stable prefix you place on everything you author).
+  draft-PR steering), any last-resort blocked-only channel, the deployment's canonical
+  **AI-disclosure line** (the stable prefix you place on everything you author), and the
+  maintainer's **interactive-session marker** (the literal a PR body carries when it came from the
+  maintainer's own hand-driven session, which the surveyor reads to tell that PR from your own).
 
 One further section is **conditionally** required, and it is what turns spend stewardship on:
 
