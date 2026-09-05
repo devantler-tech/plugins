@@ -211,7 +211,15 @@ body**: a line whose content, after leading whitespace and any blockquote `>` or
 markers, begins with the marker (an optional 🤖 may precede it). Never a bare substring, and never
 anchored to the body start — an interactive marker can be the last line and a routine disclosure can
 sit under a template heading, so a leads-with test reports `none` for both and cannot tell them
-apart. When both literals appear, **`interactive` wins**. The two values carry asymmetric weight:
+apart. A marker line counts wherever it appears, **including inside a fenced code block — there is
+deliberately no fence suppression.** A fence detector is unbounded to specify (an unclosed fence, a
+nested fence, a blockquoted close token, an indented code block, a backtick inside an info string, a
+raw HTML block), and every container spelling it must skip is another way for it to swallow a real
+marker; measured across 1029 PR bodies in a consuming deployment (2026-08-11), a delimiter-aware
+fence state machine changed zero verdicts. The accepted cost is the cheap direction — a body that
+fences an example of the interactive literal classifies `interactive`, which costs a steer the
+maintainer can repeat — while a real marker swallowed by a mis-parsed fence would read the
+maintainer's own commentary as an instruction. When both literals appear, **`interactive` wins**. The two values carry asymmetric weight:
 `interactive` is decisive on its own, while `routine` only corroborates the orchestrator's creation
 record, because the routine prefix also appears on maintainer-interactive PRs. The field tells the
 orchestrator whose control channel a maintainer-login comment on that PR is; it never decides whether
