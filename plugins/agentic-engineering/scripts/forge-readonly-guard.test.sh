@@ -134,6 +134,15 @@ expect_allow 'a --jq program may begin with a dash' \
   "gh api repos/devantler-tech/platform/pulls --jq -1"
 expect_allow 'a git --grep pattern may begin with a dash' \
   "git log --oneline --grep -x"
+# A dash followed by a digit is a number, not a flag: git documents `--max-count -1`
+# and `-n -1` as "no limit", and `--since -1.day` as a relative date. No flag name
+# starts with a digit, so admitting these hides nothing the guard classifies.
+expect_allow 'git --max-count takes a negative number' "git log --oneline --max-count -1"
+expect_allow 'git -n takes a negative number' "git log --oneline -n -1"
+expect_allow 'git --since takes a relative date beginning with a dash' \
+  "git log --oneline --since -1.day"
+expect_deny_names 'a negative number does not widen the rule to letters' \
+  "git log --oneline --since -x --work-tree" "-x"
 expect_allow 'issue list' "gh issue list --repo devantler-tech/ksail --state open --limit 200"
 expect_allow 'search issues' "gh search issues --owner devantler-tech --state open --limit 300"
 expect_allow 'search prs' "gh search prs --owner devantler-tech --state open"

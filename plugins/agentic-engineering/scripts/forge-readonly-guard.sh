@@ -869,9 +869,16 @@ check_gh_flag_value() {
 # grammar begins with a dash ($2 names that family's set) may take it; for every other
 # flag the guard would be handing a flag it never classified to a parser it does not
 # assert. Denied by name, so the message points at the word to remove.
+#
+# Flag-shaped means a dash followed by a letter or a second dash. A dash followed by a
+# digit is a NUMBER, never a flag — `--max-count -1` (unlimited), `-n -1`, and the
+# relative date `--since -1.day` are all documented, read-only git grammars — so it is
+# admitted for every value flag: no flag's name starts with a digit, so nothing the
+# guard classifies can hide behind one.
 check_consumed_value() {
   local prog=$1 dash_flags=$2 name=$3 val=$4
   case "$val" in
+    -[0-9]*) ;;
     -?*)
       case "$dash_flags" in
         *" $name "*) ;;
