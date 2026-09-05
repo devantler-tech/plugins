@@ -669,7 +669,7 @@ description: Fixture read-only surveyor.
 ---
 Fixture surveyor.
 
-**Every `gh --json` vocabulary is local to its subcommand.** Use the exact literal field lists prescribed by this definition. Before any ad hoc JSON read, run that same subcommand with bare `--json` and validate every requested field against the vocabulary it returns; never transfer a field name between subcommands. The bare diagnostic intentionally exits nonzero after listing its fields; treat a present vocabulary as successful discovery. If the vocabulary is missing or malformed, or the validated read fails, mark the affected evidence `QUERY-UNKNOWN` and report the query error — never translate it to an empty result.
+**Every `gh --json` vocabulary is local to its subcommand.** Use the exact literal field lists prescribed by this definition. Before any ad hoc JSON read, run that same subcommand with bare `--json` and validate every requested field against the vocabulary it returns; never transfer a field name between subcommands, and never from a different API surface onto a `gh --json` subcommand: a name that is real in a REST payload or a GraphQL schema is not thereby a `gh --json` field, and `gh` rejects the whole read on one unknown name. The default-branch classifier this definition prescribes consumes the REST `actions/runs` payload, where `path` and `created_at` are genuine — neither is a `gh run list --json` field, and that is exactly where the confusion starts. The bare diagnostic intentionally exits nonzero after listing its fields; treat a present vocabulary as successful discovery. If the vocabulary is missing or malformed, or the validated read fails, mark the affected evidence `QUERY-UNKNOWN` and report the query error — never translate it to an empty result.
 
 **Mandatory-query recovery is bounded and resumable.** Process mandatory surfaces in deterministic batches of at most eight candidates. Treat every successful batch as an immutable checkpoint. On failure, partition only the failed batch into two deterministic contiguous halves (the first half gets the extra candidate when the count is odd), execute both halves, and recursively partition each failed half until only failed singleton candidates remain. Never re-run a successful half. Continue unaffected batches and mark only failed singleton candidates `QUERY-UNKNOWN`; never discard completed evidence or collapse it into portfolio-wide `QUERY-UNKNOWN`.
 
@@ -957,6 +957,17 @@ sed 's/never transfer a field name between subcommands/field names may be reused
   "$d/plugins/alpha/agents/portfolio-surveyor.agent.md" > "$d/tmp" \
   && mv "$d/tmp" "$d/plugins/alpha/agents/portfolio-surveyor.agent.md"
 check_fail "portfolio surveyor must forbid cross-subcommand JSON field reuse" \
+  "portfolio-surveyor must validate ad hoc gh JSON fields against the same subcommand" "$d"
+
+# 22 of 25 measured `Unknown JSON field` failures came from a REST or GraphQL surface, not
+# from another subcommand (#190): `path` learned from the classifier's `actions/runs` payload
+# and spent on `gh run list --json`. The cross-surface clause is its own discriminator.
+d=$(fresh); make_desired_state "$d" alpha
+# shellcheck disable=SC2016  # the backticks are literal characters in the pattern
+sed 's/and never from a different API surface onto a `gh --json` subcommand/and freely from any other API surface onto a `gh --json` subcommand/' \
+  "$d/plugins/alpha/agents/portfolio-surveyor.agent.md" > "$d/tmp" \
+  && mv "$d/tmp" "$d/plugins/alpha/agents/portfolio-surveyor.agent.md"
+check_fail "portfolio surveyor must forbid transferring a field name from a REST or GraphQL surface" \
   "portfolio-surveyor must validate ad hoc gh JSON fields against the same subcommand" "$d"
 
 d=$(fresh); make_desired_state "$d" alpha
