@@ -95,6 +95,11 @@ command -v jq > /dev/null 2>&1 || {
 state=$(mktemp -d) || exit 2
 mkdir -p "$state/closed" "$state/rearm" || exit 2
 
+# How long to wait for the reopened event's check run before declining to re-arm auto-merge.
+# Overridable so the self-test does not sleep.
+CHECK_WAIT_SECONDS=${RECHECK_CHECK_WAIT_SECONDS:-90}
+CHECK_POLL_SECONDS=${RECHECK_CHECK_POLL_SECONDS:-3}
+
 # Restore anything this run may have disturbed. Both loops decide from the pull request's real
 # state, because a call that reports failure may still have been applied: `gh pr close` can time
 # out after GitHub accepted it, and dropping the record on that nonzero exit would leave the PR
@@ -104,7 +109,7 @@ mkdir -p "$state/closed" "$state/rearm" || exit 2
 # while older versions — including the one CI installs — report every line of its body as
 # unreachable, SC2317. A directive naming only one version's code passes here and fails there.
 settle() {
-  local f n st method headline body
+  local f n st method headline body sha baseline
   for f in "$state/closed"/*; do
     [ -e "$f" ] || continue
     n=${f##*/}
@@ -127,11 +132,44 @@ settle() {
     method=$(cat "$state/rearm/$n/method" 2> /dev/null) || method=""
     headline=$(cat "$state/rearm/$n/headline" 2> /dev/null) || headline=""
     body=$(cat "$state/rearm/$n/body" 2> /dev/null) || body=""
+    sha=$(cat "$state/rearm/$n/sha" 2> /dev/null) || sha=""
+    baseline=$(cat "$state/rearm/$n/baseline" 2> /dev/null) || baseline=0
+    # The same wait the main path performs, and for the same reason: arming auto-merge while the
+    # pre-gate green is still the newest result can merge the PR before the new run exists.
+    if ! await_fresh_check "$sha" "$baseline"; then
+      echo "::error::#$n auto-merge was NOT restored: no check run from the reopen appeared, and arming it now could merge the PR on the pre-gate result. Re-arm it by hand once its checks are running." >&2
+      continue
+    fi
     echo "recheck-open-prs: restoring auto-merge on #$n" >&2
     rearm "$n" "$method" "$headline" "$body" > /dev/null 2>&1 \
       || echo "::error::#$n auto-merge could not be restored; re-arm it by hand" >&2
   done
   rm -rf "$state"
+}
+
+# The highest check-run id at a commit, or 0. Ids increase, so a larger one later means a NEW
+# run exists — which needs no clock and no assumption about either side's timekeeping.
+newest_check() {
+  gh api "repos/${repo}/commits/$1/check-runs" --jq '[.check_runs[].id] | max // 0' 2> /dev/null
+}
+
+# Block until a check run newer than $2 exists at commit $1. Auto-merge means "merge once the
+# requirements are met", and immediately after a reopen the newest result at that commit is still
+# the PRE-GATE green: arming there can merge the pull request in the window before Actions has
+# created the run for the reopen, past the very gate this script exists to apply. Returns
+# non-zero if no new run appears, and the caller then declines to arm — an auto-merge a human
+# must restore is recoverable, a merge that skipped a gate is not.
+await_fresh_check() {
+  local sha=$1 baseline=$2 waited=0 now
+  [ -n "$sha" ] || return 1
+  while [ "$waited" -lt "$CHECK_WAIT_SECONDS" ]; do
+    now=$(newest_check "$sha")
+    case "$now" in '' | *[!0-9]*) now=0 ;; esac
+    [ "$now" -gt "$baseline" ] && return 0
+    sleep "$CHECK_POLL_SECONDS"
+    waited=$((waited + CHECK_POLL_SECONDS))
+  done
+  return 1
 }
 
 # Re-arm auto-merge exactly as it was: the same strategy, and the same commit metadata.
@@ -212,7 +250,7 @@ while IFS=$'\t' read -r number title; do
   # then be restored as GitHub's default message — a silent change to someone's chosen commit.
   # A failed read leaves the PR untouched: closing it without knowing its state would risk both
   # reversing a deliberate closure and dropping an armed auto-merge.
-  if ! snapshot=$(gh pr view "$number" --repo "$repo" --json state,autoMergeRequest) \
+  if ! snapshot=$(gh pr view "$number" --repo "$repo" --json state,autoMergeRequest,headRefOid) \
     || [ -z "$snapshot" ]; then
     echo "::error::#$number state could not be read; left untouched"
     failed=$((failed + 1))
@@ -236,6 +274,13 @@ while IFS=$'\t' read -r number title; do
     printf '%s' "$snapshot" | jq -r '.autoMergeRequest.mergeMethod // ""' > "$state/rearm/$number/method"
     printf '%s' "$snapshot" | jq -r '.autoMergeRequest.commitHeadline // ""' > "$state/rearm/$number/headline"
     printf '%s' "$snapshot" | jq -r '.autoMergeRequest.commitBody // ""' > "$state/rearm/$number/body"
+    head_sha=$(printf '%s' "$snapshot" | jq -r '.headRefOid // ""')
+    printf '%s' "$head_sha" > "$state/rearm/$number/sha"
+    # The high-water mark of check runs at this commit BEFORE the reopen, so "a run from the
+    # reopen exists" is answerable afterwards without trusting any clock.
+    check_baseline=$(newest_check "$head_sha")
+    case "$check_baseline" in '' | *[!0-9]*) check_baseline=0 ;; esac
+    printf '%s' "$check_baseline" > "$state/rearm/$number/baseline"
   fi
 
   # Close and reopen produce the `reopened` event that resolves a fresh merge ref. The head is
@@ -260,6 +305,15 @@ while IFS=$'\t' read -r number title; do
     method=$(cat "$state/rearm/$number/method" 2> /dev/null) || method=""
     headline=$(cat "$state/rearm/$number/headline" 2> /dev/null) || headline=""
     body=$(cat "$state/rearm/$number/body" 2> /dev/null) || body=""
+    # Wait for the reopen's own check run before arming. Until it exists the newest result at
+    # this commit is the pre-gate green, and `--auto` merges as soon as the requirements read as
+    # met — which would take the pull request past the gate this run is applying.
+    if ! await_fresh_check "$head_sha" "$check_baseline"; then
+      echo "::error::#$number was re-triggered, but auto-merge was NOT restored: no check run from the reopen appeared within ${CHECK_WAIT_SECONDS}s, and arming it now could merge the PR on the pre-gate result. Re-arm it by hand once its checks are running."
+      rm -rf "$state/rearm/$number"
+      failed=$((failed + 1))
+      continue
+    fi
     if ! rearm "$number" "$method" "$headline" "$body" > /dev/null; then
       # Left in the rearm set on purpose: once the close has cleared the request, a later run
       # cannot tell that this PR ever had auto-merge armed, so the obligation has to survive

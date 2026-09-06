@@ -52,6 +52,14 @@ verb="\$1 \$2"
 # The paginated listing. Asserted on shape as well as content: the query must be passed as GET
 # fields, never spliced into the path, or a branch name containing & or # would select something
 # else entirely.
+if [ "\$1" = "api" ] && case "\$2" in *check-runs) true;; *) false;; esac; then
+  printf '%s\n' "api check-runs" >> "\$log"
+  # Ids grow after a reopen, exactly as Actions creates a new run for the new event.
+  bumps=\$(cat "\$db/checkbump" 2>/dev/null || printf '0')
+  printf '%s\n' "\$bumps"
+  exit 0
+fi
+
 if [ "\$verb" = "api --paginate" ]; then
   printf '%s\n' "api \$*" >> "\$log"
   [ -f "$dir/listing-fails" ] && exit 1
@@ -82,8 +90,8 @@ case "\$verb" in
       am=null
     fi
     case "\$fields" in
-      "state,autoMergeRequest")
-        printf '{"state":"%s","autoMergeRequest":%s}\n' "\$st" "\$am"
+      "state,autoMergeRequest,headRefOid")
+        printf '{"state":"%s","autoMergeRequest":%s,"headRefOid":"deadbeef"}\n' "\$st" "\$am"
         ;;
       state)
         printf '%s\n' "\$st"
@@ -116,6 +124,8 @@ case "\$verb" in
       : > "\$db/failed-reopen"; exit 1
     fi
     rm -f "\$db/closed-\$n"
+    # Reopening creates a new check run, so the high-water mark moves.
+    printf '%s' "\$(( \$(cat "\$db/checkbump" 2>/dev/null || printf '0') + 1 ))" > "\$db/checkbump"
     exit 0
     ;;
   "pr merge")
@@ -137,14 +147,16 @@ EOF
 run_script() {
   local dir="$1"
   shift
-  env PATH="$dir/bin:$PATH" "$SCRIPT" --repo owner/name "$@" 2>&1
+  env PATH="$dir/bin:$PATH" RECHECK_CHECK_WAIT_SECONDS=2 RECHECK_CHECK_POLL_SECONDS=1 \
+    "$SCRIPT" --repo owner/name "$@" 2>&1
 }
 
 # Same stubbed PATH, every argument the caller's — for cases that must pass a malformed --repo.
 run_raw() {
   local dir="$1"
   shift
-  env PATH="$dir/bin:$PATH" "$SCRIPT" "$@" 2>&1
+  env PATH="$dir/bin:$PATH" RECHECK_CHECK_WAIT_SECONDS=2 RECHECK_CHECK_POLL_SECONDS=1 \
+    "$SCRIPT" "$@" 2>&1
 }
 
 calls() { awk 'END { print NR }' "$1/calls.log"; }
@@ -252,8 +264,8 @@ if [ "$(grep -n 'pr close 11' "$d/calls.log" | cut -d: -f1)" -lt \
 else
   bad "close precedes reopen for the same PR" "$log"
 fi
-if [ "$(grep -c 'pr view 11 state,autoMergeRequest' "$d/calls.log")" -ge 1 ] \
-  && [ "$(grep -c 'pr view 22 state,autoMergeRequest' "$d/calls.log")" -ge 1 ]; then
+if [ "$(grep -c 'pr view 11 state,autoMergeRequest,headRefOid' "$d/calls.log")" -ge 1 ] \
+  && [ "$(grep -c 'pr view 22 state,autoMergeRequest,headRefOid' "$d/calls.log")" -ge 1 ]; then
   ok "state and auto-merge are read per PR, immediately before closing it"
 else
   bad "state and auto-merge are read per PR, immediately before closing it" "$log"
@@ -421,6 +433,37 @@ if [ "$rc" -eq 0 ] && [ "$(grep -c 'pr close 22' "$d/calls.log")" -eq 0 ] \
   ok "a PR closed after the listing is skipped, not reopened"
 else
   bad "a PR closed after the listing is skipped, not reopened" "exit $rc" "$(cat "$d/calls.log")" "$out"
+fi
+
+# --- auto-merge is not armed before the reopen's own check run exists ----
+# `--auto` merges as soon as the requirements read as met. Immediately after a reopen the newest
+# result at that commit is still the PRE-GATE green, so arming there could merge the pull request
+# past the very gate the sweep is applying. When no fresh run appears, declining to arm is the
+# safe direction: an auto-merge a human restores is recoverable, a merge that skipped a gate is not.
+d="$WORK/nofreshcheck"
+make_gh "$d" "$TWO_PRS" "" "11"
+# Freeze the high-water mark: reopening no longer produces a new check run.
+python3 - "$d/bin/gh" <<'PYEOF'
+import sys,re
+p=sys.argv[1]
+s=open(p).read()
+s=s.replace('printf \'%s\' "$(( $(cat "$db/checkbump" 2>/dev/null || printf \'0\') + 1 ))" > "$db/checkbump"', ':')
+open(p,"w").write(s)
+PYEOF
+out=$(run_script "$d")
+rc=$?
+log=$(cat "$d/calls.log")
+if [ "$rc" -eq 1 ] && [ "$(grep -c 'pr merge 11' "$d/calls.log")" -eq 0 ] \
+  && [[ $out == *"could merge the PR on the pre-gate result"* ]]; then
+  ok "auto-merge is not armed when no check run from the reopen appears"
+else
+  bad "auto-merge is not armed when no check run from the reopen appears" "exit $rc" "$log" "$out"
+fi
+# The pull request itself must still be left open: declining to arm is not a reason to abandon it.
+if [ "$(left_closed "$d")" -eq 0 ]; then
+  ok "declining to re-arm still leaves the PR open"
+else
+  bad "declining to re-arm still leaves the PR open" "$(left_closed "$d") still closed"
 fi
 
 # --- a malformed listing is an error, never a shorter list ---------------

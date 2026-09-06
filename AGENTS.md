@@ -250,11 +250,19 @@ when a new job joins `CI - Required Checks` keeps the green it earned *before* t
 the branch rule keyed on the check's name is satisfied by the stale run. Such a PR can merge without
 the new gate ever running against it — which is how a stale plugin version or a hand-edited synced
 skill would reach consumers past the very checks added to stop them.
-[`recheck-open-prs.yaml`](.github/workflows/recheck-open-prs.yaml) closes that window: any push to
-`main` touching `ci.yaml` re-triggers every open PR's checks, and it can be dispatched by hand
-(with a `dry-run` input) after any other change that ought to be re-evaluated. So **when you add or
-alter a required job, the recheck is the mechanism that makes it apply to work already in flight** —
-there is nothing extra to remember, but there is something to notice if it ever stops running.
+[`recheck-open-prs.yaml`](.github/workflows/recheck-open-prs.yaml) closes that window: **every push
+to `main`** re-triggers every open PR's checks, and it can also be dispatched by hand with a
+`dry-run` input to see what a sweep would touch. So **when you add or alter a required job, the
+recheck is the mechanism that makes it apply to work already in flight** — there is nothing extra to
+remember, but there is something to notice if it ever stops running.
+
+It sweeps unconditionally because deciding *whether* a gate changed cannot be made correct here, and
+three narrower designs were tried and rejected: a `paths:` filter is capped at 300 files, so a large
+sync can change `ci.yaml` without the filter seeing it; diffing the pushed range loses a push the
+concurrency group coalesced away; and testing `ci.yaml` alone misses a gate strengthened in its
+*implementation*, since that file runs `validate-manifests.sh` and friends and a new rejection there
+changes what the required check accepts while `ci.yaml` is untouched. Each blind spot is silent,
+which is worse than no trigger. **If you narrow this trigger, you are re-opening one of those three.**
 
 Re-triggering means a **close and immediate reopen**, not a re-run: re-running a workflow replays the
 original event's `GITHUB_SHA`, which for a pull request is the merge commit as it stood *before* the
@@ -262,8 +270,14 @@ gate landed. Only a fresh `pull_request` event resolves the merge ref again, and
 such event that leaves the PR's head — and therefore any green review at that head — untouched. It
 runs under an App token because events produced with `GITHUB_TOKEN` start no workflow runs.
 [`recheck-open-prs.sh`](scripts/recheck-open-prs.sh) carries the details and never leaves a PR closed;
-its self-test proves that, the close-before-reopen order, and that an armed auto-merge is restored
-without one ever being armed that was not.
+its self-test proves that, the close-before-reopen order, and that an armed auto-merge is restored —
+with its original strategy and commit message — without one ever being armed that was not. One
+subtlety is worth knowing before touching it: an armed auto-merge is restored only after a check run
+from the reopen is observable. Until then the newest result at that commit is still the pre-gate
+green, and `--auto` merges as soon as the requirements read as met — so arming early could merge the
+pull request past the very gate the sweep is applying. When no such run appears, the script declines
+to arm and says so, because an auto-merge a human restores is recoverable and a merge that skipped a
+gate is not.
 
 GitHub's own mechanism for this is `strict_required_status_checks_policy` — "require branches to be up
 to date before merging" — which would block a stale PR outright rather than re-running it. It is

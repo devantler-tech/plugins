@@ -43,7 +43,12 @@ concurrency:
   # other's reopen. `cancel-in-progress: false` protects the pass that is already running; a
   # PENDING pass discarded by a third push loses nothing, because every pass sweeps every open
   # PR unconditionally, so the newest one does strictly more than the one it displaced.
-  group: recheck-open-prs
+  #
+  # A dry run gets its OWN group. Actions holds one running plus one pending per group, so a dry
+  # run sharing this key would displace a pending sweep — and since it only lists, the pull
+  # requests that sweep would have re-triggered never receive a fresh event at all. A run that
+  # mutates nothing must not be able to cancel one that does.
+  group: recheck-open-prs${{ inputs.dry-run && '-dry-run' || '' }}
   cancel-in-progress: false
 
 permissions: {}
@@ -70,12 +75,15 @@ jobs:
         # needs it as well as pull-requests write. Without it the close and reopen would succeed
         # and every re-arm would fail, so a PR that arrived with auto-merge armed would be left
         # without it.
+        #
+        # A dry run only lists, so it takes read scopes. An advertised read-only mode should not
+        # be holding repository-wide write credentials it cannot use.
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
+          permission-contents: ${{ inputs.dry-run && 'read' || 'write' }}
+          permission-pull-requests: ${{ inputs.dry-run && 'read' || 'write' }}
 
       - name: 🔁 Re-trigger open pull requests
         env:
