@@ -20,7 +20,7 @@ run — the
 (plugin identity), **then** the
 [version 3 checklist](../plugins/agentic-engineering/README.md#migrating-to-version-3) (retire the
 `finops-engineer` schedule and adopt the `Spend contract` section), **then** the
-[version 4 checklist](../plugins/agentic-engineering/README.md#migrating-to-the-agentic-engineer-entrypoint)
+[version 4 checklist](../plugins/agentic-engineering/README.md#migrating-to-version-4)
 (the `automated-ai-engineer` → `agentic-engineer` entrypoint rename). Stopping early would resume
 unattended writes with the retired FinOps schedule still armed, or with a schedule pointing at an
 entrypoint that no longer resolves.
@@ -104,4 +104,3 @@ consuming deployment must define the five contract sections (Portfolio map, Trus
 Memory, Maintainer channels) in its `AGENTS.md` — plus **Agent definition locations** and
 **Authority model** if it enables `agent-improver`, and **Spend contract** if it wants the engineer to
 steward spend (see the [plugin README](../plugins/agentic-engineering/README.md)).
-
