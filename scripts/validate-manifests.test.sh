@@ -52,7 +52,7 @@ sync_entrypoint_digest() {
 # Build a complete, valid fixture repo (two plugins) at $1.
 make_fixture() {
   local root="$1"
-  mkdir -p "$root/.github/plugin" "$root/.claude-plugin" "$root/scripts"
+  mkdir -p "$root/.github/plugin" "$root/.claude-plugin" "$root/scripts" "$root/docs"
   local manifest='{
   "name": "devantler-plugins",
   "renames": {
@@ -71,7 +71,7 @@ make_fixture() {
   make_plugin "$root" alpha "Alpha plugin" "1.0.0"
   make_plugin "$root" beta "Beta plugin" "1.0.0"
   # A README plugin table in lockstep with the two plugins + their example-skill.
-  cat > "$root/README.md" <<'EOF'
+  cat > "$root/docs/plugins.md" <<'EOF'
 # fixture
 
 | Plugin | Skills | Description |
@@ -358,13 +358,18 @@ check_fail "plugin.json name drift vs manifest fails" "name does not match manif
 d=$(fresh); make_plugin "$d" gamma "Orphan plugin" "1.0.0"
 check_fail "orphan plugin not in manifest fails" "plugins/gamma is not listed in" "$d"
 
-# --- check 5: README plugin table <-> plugins/skills lockstep ---
+# --- check 5: catalogue table <-> plugins/skills lockstep ---
+d=$(fresh)
+cp "$d/docs/plugins.md" "$d/README.md"
+rm "$d/docs/plugins.md"
+check_fail "a stale README cannot replace the missing catalogue" "docs/plugins.md: plugin catalogue is missing" "$d"
+
 # A README row for a plugin that does not exist on disk.
 # (literal backticks in the table cell, not command substitution — SC2016 false positive)
 d=$(fresh)
 # shellcheck disable=SC2016
-printf '| [`gamma`](plugins/gamma/) | `example-skill` | Ghost plugin |\n' >> "$d/README.md"
-check_fail "README row for nonexistent plugin fails" "README.md lists plugin 'gamma' with no plugins/gamma/plugin.json on disk" "$d"
+printf '| [`gamma`](plugins/gamma/) | `example-skill` | Ghost plugin |\n' >> "$d/docs/plugins.md"
+check_fail "README row for nonexistent plugin fails" "docs/plugins.md lists plugin 'gamma' with no plugins/gamma/plugin.json on disk" "$d"
 
 # A README row whose plugins/<name>/ exists but has no plugin.json (a stray dir the
 # orphan scan can't see) must be rejected, not silently accepted.
@@ -372,26 +377,26 @@ d=$(fresh)
 mkdir -p "$d/plugins/gamma/skills/example-skill"
 printf 'Ghost skill.\n' > "$d/plugins/gamma/skills/example-skill/SKILL.md"
 # shellcheck disable=SC2016
-printf '| [`gamma`](plugins/gamma/) | `example-skill` | Ghost plugin |\n' >> "$d/README.md"
-check_fail "README row for dir without plugin.json fails" "README.md lists plugin 'gamma' with no plugins/gamma/plugin.json on disk" "$d"
+printf '| [`gamma`](plugins/gamma/) | `example-skill` | Ghost plugin |\n' >> "$d/docs/plugins.md"
+check_fail "README row for dir without plugin.json fails" "docs/plugins.md lists plugin 'gamma' with no plugins/gamma/plugin.json on disk" "$d"
 
 # A stray skill directory with no SKILL.md is still counted, so the README Resources
 # column drifts out of lockstep and the guard fails (it is not silently hidden).
 d=$(fresh)
 mkdir -p "$d/plugins/alpha/skills/half-added-skill"
-check_fail "skill dir without SKILL.md still counted (drift caught)" "README.md Resources for 'alpha'" "$d"
+check_fail "skill dir without SKILL.md still counted (drift caught)" "docs/plugins.md Resources for 'alpha'" "$d"
 
 # A skill added on disk but not reflected in the README Resources column.
 d=$(fresh)
 mkdir -p "$d/plugins/alpha/skills/second-skill"
 printf 'Second skill.\n' > "$d/plugins/alpha/skills/second-skill/SKILL.md"
-check_fail "README skills drift vs disk fails" "README.md Resources for 'alpha'" "$d"
+check_fail "README skills drift vs disk fails" "docs/plugins.md Resources for 'alpha'" "$d"
 
 # A plugin on disk (and in the manifests) with no README table row.
 d=$(fresh)
 # shellcheck disable=SC2016
-grep -v '`beta`' "$d/README.md" > "$d/tmp" && mv "$d/tmp" "$d/README.md"
-check_fail "plugin missing from README table fails" "plugins/beta is not listed in the README.md plugin table" "$d"
+grep -v '`beta`' "$d/docs/plugins.md" > "$d/tmp" && mv "$d/tmp" "$d/docs/plugins.md"
+check_fail "plugin missing from README table fails" "plugins/beta is not listed in the docs/plugins.md plugin table" "$d"
 
 # --- check 6: bundled SKILL.md provenance ---
 # A skill whose frontmatter has its github-repo provenance stripped (e.g. hand-edited)
@@ -469,20 +474,20 @@ check_fail "SKILL.md with comment-only github-repo fails" "missing upstream prov
 d=$(fresh)
 printf '%s\n' '{ "mcpServers": { "test-mcp": { "command": "test-mcp", "args": ["serve"] } } }' > "$d/plugins/alpha/.mcp.json"
 # shellcheck disable=SC2016
-sed 's/`example-skill` | Alpha plugin/`example-skill`, `test-mcp` | Alpha plugin/' "$d/README.md" > "$d/tmp" && mv "$d/tmp" "$d/README.md"
+sed 's/`example-skill` | Alpha plugin/`example-skill`, `test-mcp` | Alpha plugin/' "$d/docs/plugins.md" > "$d/tmp" && mv "$d/tmp" "$d/docs/plugins.md"
 check_pass "plugin bundling a valid .mcp.json passes (MCP server in README resources)" "$d"
 
 # A remote (url) MCP server is equally valid.
 d=$(fresh)
 printf '%s\n' '{ "mcpServers": { "test-mcp": { "type": "http", "url": "https://example.com/mcp" } } }' > "$d/plugins/alpha/.mcp.json"
 # shellcheck disable=SC2016
-sed 's/`example-skill` | Alpha plugin/`example-skill`, `test-mcp` | Alpha plugin/' "$d/README.md" > "$d/tmp" && mv "$d/tmp" "$d/README.md"
+sed 's/`example-skill` | Alpha plugin/`example-skill`, `test-mcp` | Alpha plugin/' "$d/docs/plugins.md" > "$d/tmp" && mv "$d/tmp" "$d/docs/plugins.md"
 check_pass "plugin bundling a remote (url) MCP server passes" "$d"
 
 # A bundled MCP server name missing from the README Resources column drifts out of lockstep.
 d=$(fresh)
 printf '%s\n' '{ "mcpServers": { "test-mcp": { "command": "test-mcp" } } }' > "$d/plugins/alpha/.mcp.json"
-check_fail "MCP server missing from README resources fails" "README.md Resources for 'alpha'" "$d"
+check_fail "MCP server missing from README resources fails" "docs/plugins.md Resources for 'alpha'" "$d"
 
 # An .mcp.json that is not valid JSON is rejected.
 d=$(fresh); printf '%s\n' 'not json' > "$d/plugins/alpha/.mcp.json"
@@ -517,20 +522,20 @@ EOF
 d=$(fresh)
 mkdir -p "$d/plugins/alpha/agents"; make_agent "$d/plugins/alpha/agents" bare-agent.md
 # shellcheck disable=SC2016
-sed 's/`example-skill` | Alpha plugin/`example-skill`, `bare-agent` | Alpha plugin/' "$d/README.md" > "$d/tmp" && mv "$d/tmp" "$d/README.md"
+sed 's/`example-skill` | Alpha plugin/`example-skill`, `bare-agent` | Alpha plugin/' "$d/docs/plugins.md" > "$d/tmp" && mv "$d/tmp" "$d/docs/plugins.md"
 check_fail "agent named bare .md fails (not VS Code/Copilot-discoverable)" "must use the <name>.agent.md suffix" "$d"
 
 # A bundled agent name missing from the README Resources column drifts out of lockstep.
 d=$(fresh)
 mkdir -p "$d/plugins/alpha/agents"; make_agent "$d/plugins/alpha/agents" test-agent.agent.md
-check_fail "custom agent missing from README resources fails" "README.md Resources for 'alpha'" "$d"
+check_fail "custom agent missing from README resources fails" "docs/plugins.md Resources for 'alpha'" "$d"
 
 # VS Code's discovery suffix (<name>.agent.md, ADR 0001's 2026-07-18 correction) resolves to the
 # same README token as <name>.md — the enumerator strips the whole .agent.md, never just .md.
 d=$(fresh)
 mkdir -p "$d/plugins/alpha/agents"; make_agent "$d/plugins/alpha/agents" test-agent.agent.md
 # shellcheck disable=SC2016
-sed 's/`example-skill` | Alpha plugin/`example-skill`, `test-agent` | Alpha plugin/' "$d/README.md" > "$d/tmp" && mv "$d/tmp" "$d/README.md"
+sed 's/`example-skill` | Alpha plugin/`example-skill`, `test-agent` | Alpha plugin/' "$d/docs/plugins.md" > "$d/tmp" && mv "$d/tmp" "$d/docs/plugins.md"
 check_pass "agent named <name>.agent.md resolves to <name> in README resources" "$d"
 
 # An agents/ dir with no *.md (only a stray non-agent file) is not a valid agent resource.
@@ -567,7 +572,7 @@ description: >-
 Body.
 EOF
 # shellcheck disable=SC2016
-sed 's/`example-skill` | Alpha plugin/`example-skill`, `test-agent` | Alpha plugin/' "$d/README.md" > "$d/tmp" && mv "$d/tmp" "$d/README.md"
+sed 's/`example-skill` | Alpha plugin/`example-skill`, `test-agent` | Alpha plugin/' "$d/docs/plugins.md" > "$d/tmp" && mv "$d/tmp" "$d/docs/plugins.md"
 check_pass "agent with a folded (>-) description passes" "$d"
 
 # A bare block-scalar description indicator with no body is empty ⇒ rejected.
@@ -696,7 +701,7 @@ EOF
       sub("`example-skill`", "`agent-improvement`, `agent-improver`, `agentic-engineer`, `example-skill`, `portfolio-surveyor`")
     }
     { print }
-  ' "$root/README.md" > "$root/README.tmp" && mv "$root/README.tmp" "$root/README.md"
+  ' "$root/docs/plugins.md" > "$root/README.tmp" && mv "$root/README.tmp" "$root/docs/plugins.md"
   entrypoint_sha256=$(sha256_file "$root/plugins/$name/agents/agentic-engineer.agent.md")
   portfolio_surveyor_sha256=$(sha256_file "$root/plugins/$name/agents/portfolio-surveyor.agent.md")
   agent_improver_sha256=$(sha256_file "$root/plugins/$name/agents/agent-improver.agent.md")
@@ -1211,7 +1216,7 @@ d=$(fresh); make_desired_state "$d" alpha
 rm "$d/plugins/alpha/agents/agent-improver.agent.md"
 # README resource names contain literal backticks.
 # shellcheck disable=SC2016
-sed 's/`agent-improver`, //' "$d/README.md" > "$d/tmp" && mv "$d/tmp" "$d/README.md"
+sed 's/`agent-improver`, //' "$d/docs/plugins.md" > "$d/tmp" && mv "$d/tmp" "$d/docs/plugins.md"
 check_fail "plugin-backed schedule targets must resolve to bundled agents" \
   "plugin-backed schedule target must resolve to a bundled agent" "$d"
 

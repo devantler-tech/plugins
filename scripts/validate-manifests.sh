@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Validate the plugin marketplace manifests, every plugins/<name>/plugin.json, and the
-# README plugin table.
+# plugin catalogue table.
 #
 # Single source of truth for the checks the 🧪 CI "Validate manifests" job runs:
 #   1. Both marketplace manifests (Copilot + Claude) are well-formed (.name + .plugins).
@@ -10,7 +10,7 @@
 #      equivalent .claude-plugin/plugin.json for strict Claude ingestion.
 #   5. Manifest entries and on-disk plugins are in lockstep (no missing/orphan plugin,
 #      no name/description/version/source divergence).
-#   6. The README plugin table and on-disk plugin resources are in lockstep (every plugin
+#   6. The plugin catalogue table and on-disk plugin resources are in lockstep (every plugin
 #      has a row and vice versa; each row's Resources column matches the plugin's bundled
 #      skills + MCP servers).
 #   7. Ancillary *.desired-state.json onboarding resources are structurally complete,
@@ -26,7 +26,7 @@ set -euo pipefail
 COPILOT_MANIFEST=".github/plugin/marketplace.json"
 CLAUDE_MANIFEST=".claude-plugin/marketplace.json"
 RENAME_HISTORY="scripts/marketplace-rename-history.json"
-README="README.md"
+README="docs/plugins.md"
 
 # Digest helpers are shared with the desired-state digest generator, so the value this
 # gate demands and the value that generator writes cannot drift apart. See
@@ -377,7 +377,7 @@ plugin_disk_resources() {
   } | sort | tr '\n' ' '
 }
 
-# 6. The README plugin table and on-disk plugin resources are in lockstep.
+# 6. The plugin catalogue table and on-disk plugin resources are in lockstep.
 #    Table rows look like:
 #      | [`<name>`](plugins/<name>/) | `skill-a`, `mcp-server-b` | <editorial description> |
 #    The Resources column lists every bundled skill AND MCP server; the Description
@@ -386,10 +386,14 @@ plugin_disk_resources() {
 # substitution — SC2016 (won't-expand) is a false positive here.
 # shellcheck disable=SC2016
 validate_readme_parity() {
+  if [ ! -f "$README" ]; then
+    echo "::error::$README: plugin catalogue is missing"
+    return 1
+  fi
   local failed=0
   local line name readme_resources disk_resources
   local readme_names=()
-  # Each README plugin row: parse the plugin name (col 1) and its Resources column (col 3).
+  # Each catalogue row: parse the plugin name (col 1) and its Resources column (col 3).
   while IFS= read -r line; do
     name=$(printf '%s' "$line" | sed -nE 's/^\| \[`([a-z0-9-]+)`\].*/\1/p')
     [ -z "$name" ] && continue
@@ -412,7 +416,7 @@ validate_readme_parity() {
       echo "✓ $README ↔ plugins/$name (resources: ${disk_resources% })"
     fi
   done < <(grep -E '^\| \[`[a-z0-9-]+`\]' "$README")
-  # Every plugins/<name>/ on disk appears as a README row (no plugin missing from the table).
+  # Every plugins/<name>/ on disk appears as a catalogue row (no plugin missing from the table).
   local pj listed rn
   for pj in plugins/*/plugin.json; do
     name=$(jq -r '.name' "$pj")
