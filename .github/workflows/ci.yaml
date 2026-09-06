@@ -73,6 +73,14 @@ jobs:
       - name: 🧪 Self-test validator installation recovery
         run: bash scripts/install-skills-ref.test.sh
 
+      - name: 🧪 Self-test the open-PR recheck
+        # Proves recheck-open-prs.sh re-triggers each open PR in the one order that is safe
+        # (close BEFORE reopen), never leaves a PR closed when a step fails mid-sequence,
+        # restores an armed auto-merge without arming one that was not, and fails closed on
+        # an unparseable listing rather than reading it as "no open PRs". Hermetic: `gh` is
+        # stubbed on PATH, so nothing reaches the network or touches a real pull request.
+        run: ./scripts/recheck-open-prs.test.sh
+
       - name: 🧪 Self-test the version-bump helper
         # Proves bump-plugin-version.sh moves the version in ALL FOUR manifests that must
         # agree, that --changed-since bumps exactly what moved and is idempotent on a

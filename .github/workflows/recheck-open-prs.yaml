@@ -1,0 +1,115 @@
+name: 🔁 Recheck open PRs
+
+# A pull-request workflow runs only on that PR's own events, so every PR already open when a new
+# required gate lands on `main` keeps the green `CI - Required Checks` it earned BEFORE the gate
+# existed — and the branch rule keyed on that check name is satisfied by the stale run. Such a PR
+# can merge without the new gate ever running against it, which is exactly what each gate was
+# added to stop.
+#
+# GitHub's own mechanism for this is `strict_required_status_checks_policy` ("require branches to
+# be up to date before merging"), but it is declared org-wide and Observe-only in
+# devantler-tech/.github, so it is not this repository's to flip. This workflow is the
+# repository-scoped equivalent: when `main` moves, ask every open PR to run again. See
+# scripts/recheck-open-prs.sh for why a close-and-reopen is the only re-trigger that resolves a
+# fresh merge ref, and why it needs an App token.
+#
+# WHY EVERY PUSH, RATHER THAN A NARROWER TRIGGER
+#   Deciding "did a gate change?" was tried and cannot be made correct here.
+#   - A `paths:` filter is capped at 300 files, so a large sync can change `ci.yaml` without the
+#     filter seeing it — the failure this workflow exists to prevent, hidden behind its trigger.
+#   - Diffing the pushed range instead loses a push that the concurrency group coalesced away: a
+#     gate change queued behind a running sweep is replaced by a later unrelated push, whose own
+#     range shows no gate change, and nothing ever sweeps for it.
+#   - Testing `ci.yaml` alone misses a gate STRENGTHENED in its implementation. `ci.yaml` runs
+#     `scripts/validate-manifests.sh` and friends; adding a rejection there changes what the
+#     required check accepts while `ci.yaml` itself is untouched. Enumerating every file that
+#     implements a gate is a list that goes stale silently.
+#   Every push it is. The cost is bounded and visible — each merge re-runs the open PRs' checks —
+#   and on this repository a merge already invalidates every open PR, since a plugin's version is
+#   its cache key and lives in files every plugin change touches.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: List the pull requests that would be re-triggered, without touching them
+        type: boolean
+        default: false
+
+concurrency:
+  # One recheck at a time: two overlapping passes would close the same PR twice and race each
+  # other's reopen. `cancel-in-progress: false` protects the pass that is already running; a
+  # PENDING pass discarded by a third push loses nothing, because every pass sweeps every open
+  # PR unconditionally, so the newest one does strictly more than the one it displaced.
+  #
+  # A dry run gets its OWN group. Actions holds one running plus one pending per group, so a dry
+  # run sharing this key would displace a pending sweep — and since it only lists, the pull
+  # requests that sweep would have re-triggered never receive a fresh event at all. A run that
+  # mutates nothing must not be able to cancel one that does.
+  group: recheck-open-prs${{ inputs.dry-run && '-dry-run' || '' }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  recheck:
+    name: Re-trigger every open PR's required checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: 📄 Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Two token steps rather than one with conditional scopes, because the two modes need
+      # different SETS of permissions and not merely different levels of the same ones. A dry run
+      # never reaches the workflow-runs endpoint, so granting it that scope would hand an
+      # advertised read-only mode a permission it cannot use; and the action takes a fixed list,
+      # so a scope cannot be dropped by an expression the way a level can be lowered by one.
+      #
+      # Both mint an App token rather than using GITHUB_TOKEN: events produced with that token do
+      # not start new workflow runs, so a reopen performed with it would be silent — the same
+      # reason update-agent-skills.yaml mints one to open its PR.
+      - name: 🔑 Generate GitHub App token (sweep)
+        id: app-token
+        if: ${{ !inputs.dry-run }}
+        # `contents: write` is not spare: restoring an auto-merge request with `gh pr merge --auto`
+        # needs it as well as pull-requests write. Without it the close and reopen would succeed
+        # and every re-arm would fail, so a PR that arrived with auto-merge armed would be left
+        # without it.
+        #
+        # `actions: read` is likewise load-bearing. Before restoring an armed auto-merge the script
+        # waits for a `pull_request` run from the reopen, and that read is what makes the wait safe
+        # — without it the baseline request 403s, the pull request is left untouched with its stale
+        # green, and the gate this workflow applies is bypassed on exactly the pull requests that
+        # were about to merge themselves.
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-actions: read
+
+      - name: 🔑 Generate GitHub App token (dry run)
+        id: app-token-dry
+        if: ${{ inputs.dry-run }}
+        # Listing pull requests is all a dry run does, so those are the only scopes it gets.
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: read
+
+      - name: 🔁 Re-trigger open pull requests
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-dry.outputs.token }}
+          DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
+        run: |
+          # shellcheck disable=SC2086  # DRY_RUN is a single optional flag or empty
+          ./scripts/recheck-open-prs.sh --repo "${GITHUB_REPOSITORY}" --base main $DRY_RUN
