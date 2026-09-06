@@ -44,6 +44,8 @@ scripts/
 ├── check-plugin-version-bump.test.sh # Self-test for the gate above
 ├── guard-bundled-skill-edits.sh      # Gate: refuse a hand-edit to a synced skill tree, naming its upstream
 ├── guard-bundled-skill-edits.test.sh # Self-test for the gate above
+├── recheck-open-prs.sh         # Re-trigger every open PR's checks after a CI gate changes on main
+├── recheck-open-prs.test.sh    # Self-test for the recheck above (stubs `gh`; no network)
 ├── bump-plugin-version.sh      # Move a plugin's version across all four manifests (the fix the gate points at)
 ├── bump-plugin-version.test.sh # Self-test for the bump helper
 ├── refresh-desired-state-digests.sh      # Writer: recompute every digest a *.desired-state.json pins (the fix "digest must match" points at)
@@ -241,6 +243,33 @@ while CI was green (#65).
 The required gate is the aggregated **`CI - Required Checks`** job (validate-manifests +
 discover-skills + validate-spec); `actionlint` above is a local-only convenience, not a CI gate. Never
 weaken a check to pass — fix the root cause.
+
+**Adding a gate does not retroactively apply it to open PRs — the recheck workflow is what does.**
+A pull-request workflow runs only on that PR's own `pull_request` events, so every PR already open
+when a new job joins `CI - Required Checks` keeps the green it earned *before* that job existed, and
+the branch rule keyed on the check's name is satisfied by the stale run. Such a PR can merge without
+the new gate ever running against it — which is how a stale plugin version or a hand-edited synced
+skill would reach consumers past the very checks added to stop them.
+[`recheck-open-prs.yaml`](.github/workflows/recheck-open-prs.yaml) closes that window: any push to
+`main` touching `ci.yaml` re-triggers every open PR's checks, and it can be dispatched by hand
+(with a `dry-run` input) after any other change that ought to be re-evaluated. So **when you add or
+alter a required job, the recheck is the mechanism that makes it apply to work already in flight** —
+there is nothing extra to remember, but there is something to notice if it ever stops running.
+
+Re-triggering means a **close and immediate reopen**, not a re-run: re-running a workflow replays the
+original event's `GITHUB_SHA`, which for a pull request is the merge commit as it stood *before* the
+gate landed. Only a fresh `pull_request` event resolves the merge ref again, and `reopened` is the one
+such event that leaves the PR's head — and therefore any green review at that head — untouched. It
+runs under an App token because events produced with `GITHUB_TOKEN` start no workflow runs.
+[`recheck-open-prs.sh`](scripts/recheck-open-prs.sh) carries the details and never leaves a PR closed;
+its self-test proves that, the close-before-reopen order, and that an armed auto-merge is restored
+without one ever being armed that was not.
+
+GitHub's own mechanism for this is `strict_required_status_checks_policy` — "require branches to be up
+to date before merging" — which would block a stale PR outright rather than re-running it. It is
+declared **org-wide and `Observe`-only** in `devantler-tech/.github`, so turning it on is a maintainer
+decision affecting every repository, not this one's to make; the workflow above is the
+repository-scoped equivalent.
 
 ## Maintenance (autonomous AI engineer)
 

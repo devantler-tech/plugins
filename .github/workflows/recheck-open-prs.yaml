@@ -1,0 +1,67 @@
+name: 🔁 Recheck open PRs
+
+# A pull-request workflow runs only on that PR's own events, so every PR already open when a new
+# required gate lands on `main` keeps the green `CI - Required Checks` it earned BEFORE the gate
+# existed — and the branch rule keyed on that check name is satisfied by the stale run. Such a PR
+# can merge without the new gate ever running against it, which is exactly what each gate was
+# added to stop.
+#
+# GitHub's own mechanism for this is `strict_required_status_checks_policy` ("require branches to
+# be up to date before merging"), but it is declared org-wide and Observe-only in
+# devantler-tech/.github, so it is not this repository's to flip. This workflow is the
+# repository-scoped equivalent: when the CI definition changes on `main`, ask every open PR to run
+# again. See scripts/recheck-open-prs.sh for why a close-and-reopen is the only re-trigger that
+# resolves a fresh merge ref, and why it needs an App token.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ci.yaml
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: List the pull requests that would be re-triggered, without touching them
+        type: boolean
+        default: false
+
+concurrency:
+  # One recheck at a time: two overlapping passes would close the same PR twice and race each
+  # other's reopen. `cancel-in-progress: false` protects the pass that is already running; a
+  # PENDING pass discarded by a third push loses nothing, because every pass sweeps every open
+  # PR, so the newest one does strictly more than the one it displaced.
+  group: recheck-open-prs
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  recheck:
+    name: Re-trigger every open PR's required checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: 📄 Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: 🔑 Generate GitHub App token
+        id: app-token
+        # Events produced with GITHUB_TOKEN do not start new workflow runs, so a reopen
+        # performed with it would be silent — the same reason update-agent-skills.yaml mints an
+        # App token to open its PR.
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-pull-requests: write
+
+      - name: 🔁 Re-trigger open pull requests
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
+        run: |
+          # shellcheck disable=SC2086  # DRY_RUN is a single optional flag or empty
+          ./scripts/recheck-open-prs.sh --repo "${GITHUB_REPOSITORY}" --base main $DRY_RUN
