@@ -107,6 +107,57 @@ expect_deny 'trailing --json does not license redirection' "gh pr list --json > 
 expect_deny 'a different value flag left bare is still denied' "gh pr list --repo"
 expect_deny 'trailing --jq left bare is still denied' "gh pr list --json number --jq"
 expect_deny 'the probe does not make a mutation verb readable' "gh pr merge --json"
+
+# A value-taking flag must not swallow a flag-shaped word (#181). gh's parser does
+# consume the next word as the value whatever it looks like, so `--repo --web` never
+# opens a browser — but that inertness belongs to a downstream parser the guard does
+# not assert. The guard classifies the word itself: consumed by a flag whose value
+# grammar cannot begin with a dash, a flag-shaped word is denied by name.
+expect_deny_names 'a value flag does not swallow --web (pr list --repo)' \
+  "gh pr list --repo --web" "--web"
+expect_deny_names 'a value flag does not swallow --web (pr list --state)' \
+  "gh pr list --state --web" "--web"
+expect_deny_names 'a value flag does not swallow --web (pr view --limit)' \
+  "gh pr view 1 --limit --web" "--web"
+expect_deny_names 'gh api --method does not swallow --web' \
+  "gh api repos/devantler-tech/monorepo/pulls --method --web" "--web"
+expect_deny_names 'gh api -H does not swallow --hostname' \
+  "gh api repos/devantler-tech/monorepo/pulls -H --hostname" "--hostname"
+expect_deny_names 'git --max-count does not swallow --work-tree' \
+  "git log --oneline --max-count --work-tree" "--work-tree"
+# The rule is per flag family, not a blanket ban on dash-leading values: a search
+# expression, a jq program and a git grep pattern legitimately begin with a dash, and
+# none of them can name a program, a host, or a file.
+expect_allow 'a --search expression may begin with a dash' \
+  "gh pr list --repo devantler-tech/platform --search -label:blocked --limit 10"
+expect_allow 'a --jq program may begin with a dash' \
+  "gh api repos/devantler-tech/platform/pulls --jq -1"
+# A label or milestone title is a free-form server-side filter and may itself begin
+# with a dash; neither can name a program, a host, or a file.
+expect_allow 'a --label filter may begin with a dash' \
+  "gh issue list --repo devantler-tech/platform --label -bug --limit 10"
+expect_allow 'a --milestone filter may begin with a dash' \
+  "gh pr list --repo devantler-tech/platform --milestone -v2 --limit 10"
+expect_allow 'a git --grep pattern may begin with a dash' \
+  "git log --oneline --grep -x"
+# A dash followed by a digit is a number, not a flag: git documents `--max-count -1`
+# and `-n -1` as "no limit", and `--since -1.day` as a relative date. No flag name
+# starts with a digit, so admitting these hides nothing the guard classifies.
+expect_allow 'git --max-count takes a negative number' "git log --oneline --max-count -1"
+expect_allow 'git -n takes a negative number' "git log --oneline -n -1"
+expect_allow 'git --since takes a relative date beginning with a dash' \
+  "git log --oneline --since -1.day"
+expect_deny_names 'a negative number does not widen the rule to letters' \
+  "git log --oneline --max-count -x --work-tree" "-x"
+# git's pattern and date flags take free-form values that may begin with a dash:
+# `--author -bot` is a regex over authors and `--since -yesterday` is an approxidate
+# expression, both accepted by git as separated forms. A count is not free-form.
+expect_allow 'git --author takes a dash-leading regex' "git log --oneline --author -bot"
+expect_allow 'git --committer takes a dash-leading regex' "git log --oneline --committer -bot"
+expect_allow 'git --since takes a dash-leading date expression' \
+  "git log --oneline --since -yesterday"
+expect_allow 'git --until takes a dash-leading date expression' \
+  "git log --oneline --until -yesterday"
 expect_allow 'issue list' "gh issue list --repo devantler-tech/ksail --state open --limit 200"
 expect_allow 'search issues' "gh search issues --owner devantler-tech --state open --limit 300"
 expect_allow 'search prs' "gh search prs --owner devantler-tech --state open"
