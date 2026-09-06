@@ -27,13 +27,18 @@
 #   reopen performed with it would be silent. The caller must pass a token from the repository's
 #   GitHub App — the same reason `update-agent-skills.yaml` mints one to open its PR.
 #
+# THE TWO THINGS THIS MUST NEVER LEAVE BEHIND
+#   A pull request closed, and an auto-merge that was armed before the run and is not after it.
+#   Both are tracked in a state directory from BEFORE the mutation that could cause them, and the
+#   exit trap settles both from the pull request's ACTUAL state rather than from an assumption
+#   about whether a failed call took effect — a request can be applied and still report failure.
+#
 # Usage:
 #   ./scripts/recheck-open-prs.sh --repo OWNER/NAME [--base BRANCH] [--dry-run]
 #
 # Reads `gh` from PATH and expects it already authenticated with an App token.
 # Exit 0 when every selected PR was re-triggered (or none was selected), 1 when any PR could not
-# be, 2 on a usage or environment error. A PR is never left closed: the exit trap reopens
-# anything this script closed and did not reopen.
+# be, 2 on a usage or environment error.
 set -uo pipefail
 
 usage() {
@@ -81,52 +86,73 @@ command -v gh > /dev/null 2>&1 || {
   exit 2
 }
 
-# Records a PR from the moment closing it is ATTEMPTED until it is reopened. The trap is what
-# makes a crash, a cancelled job, or an API failure mid-sequence safe. The record is written
-# before the close rather than after it, because a close that succeeds and then fails to be
-# recorded would leave a closed PR the trap knows nothing about; a record whose close never
-# happened costs only a harmless reopen of an already-open PR.
-pending=$(mktemp) || exit 2
+state=$(mktemp -d) || exit 2
+mkdir -p "$state/closed" "$state/rearm" || exit 2
+
+# Restore anything this run may have disturbed. Both loops decide from the pull request's real
+# state, because a call that reports failure may still have been applied: `gh pr close` can time
+# out after GitHub accepted it, and dropping the record on that nonzero exit would leave the PR
+# closed with nothing tracking it.
 # shellcheck disable=SC2317,SC2329  # invoked indirectly, by the EXIT trap below. Both codes are
 # needed: shellcheck >= 0.11 reports the unused-looking function as SC2329 on its declaration,
 # while older versions — including the one CI installs — report every line of its body as
 # unreachable, SC2317. A directive naming only one version's code passes here and fails there.
-reopen_pending() {
-  local n
-  while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    echo "recheck-open-prs: reopening #$n left closed by an interrupted run" >&2
-    gh pr reopen "$n" --repo "$repo" > /dev/null 2>&1 || {
-      echo "::error::#$n could not be reopened; reopen it by hand" >&2
-    }
-  done < "$pending"
-  rm -f "$pending"
+settle() {
+  local f n st headline body
+  for f in "$state/closed"/*; do
+    [ -e "$f" ] || continue
+    n=${f##*/}
+    st=$(gh pr view "$n" --repo "$repo" --json state --jq '.state' 2> /dev/null) || st=UNKNOWN
+    # UNKNOWN reopens too: an unreadable state is not evidence the PR is open, and reopening an
+    # already-open pull request costs nothing.
+    if [ "$st" = "OPEN" ] || [ "$st" = "MERGED" ]; then
+      continue
+    fi
+    echo "recheck-open-prs: reopening #$n, left closed (state=$st)" >&2
+    gh pr reopen "$n" --repo "$repo" > /dev/null 2>&1 \
+      || echo "::error::#$n could not be reopened; reopen it by hand" >&2
+  done
+  for f in "$state/rearm"/*; do
+    [ -e "$f" ] || continue
+    n=${f##*/}
+    st=$(gh pr view "$n" --repo "$repo" --json autoMergeRequest \
+      --jq 'if .autoMergeRequest == null then "none" else "armed" end' 2> /dev/null) || st=none
+    [ "$st" = "armed" ] && continue
+    headline=$(cat "$state/rearm/$n/headline" 2> /dev/null) || headline=""
+    body=$(cat "$state/rearm/$n/body" 2> /dev/null) || body=""
+    echo "recheck-open-prs: restoring auto-merge on #$n" >&2
+    rearm "$n" "$headline" "$body" > /dev/null 2>&1 \
+      || echo "::error::#$n auto-merge could not be restored; re-arm it by hand" >&2
+  done
+  rm -rf "$state"
 }
-trap reopen_pending EXIT
 
-# Drop $1 from the pending record. Rewritten wholesale rather than appended to, so the file is
-# always the exact set of PRs currently closed by this run.
-forget_pending() {
-  local keep
-  if ! keep=$(grep -v -x -- "$1" "$pending"); then
-    keep=""
-  fi
-  if [ -z "$keep" ]; then
-    : > "$pending"
-  else
-    printf '%s\n' "$keep" > "$pending"
-  fi
+# Re-arm auto-merge, preserving the commit metadata the request carried. Recreating it with
+# defaults would silently discard a squash subject or body someone chose deliberately.
+rearm() {
+  local n=$1 headline=$2 body=$3
+  set -- "$n" --repo "$repo" --auto --squash
+  [ -z "$headline" ] || set -- "$@" --subject "$headline"
+  [ -z "$body" ] || set -- "$@" --body "$body"
+  gh pr merge "$@"
 }
+
+trap settle EXIT
 
 # `gh pr list --limit N` fetches at most N, so any cap silently skips the pull requests past it
 # and leaves them on the pre-gate result — the exact failure this script exists to prevent, just
-# further down the list. `gh api --paginate` walks every page instead, so the sweep is complete
-# however many are open.
+# further down the list. `gh api --paginate` walks every page instead.
+#
+# The query parameters are passed as GET fields rather than interpolated into the path: a branch
+# name may legally contain `&` or `#`, which spliced into a query string would silently select a
+# different set of pull requests. `--method GET` is what keeps gh from turning the fields into a
+# POST body.
 #
 # Auto-merge is deliberately NOT read here. A snapshot taken now could be minutes old by the time
 # a given PR is processed, and re-arming from it would restore an auto-merge someone disabled in
 # between — a merge nobody asked for. It is read per PR, immediately before closing.
-if ! prs=$(gh api --paginate "repos/${repo}/pulls?state=open&base=${base}&per_page=100" \
+if ! prs=$(gh api --paginate --method GET "repos/${repo}/pulls" \
+  -f state=open -f base="$base" -F per_page=100 \
   --jq '.[]|[(.number|tostring), (.title // "")]|@tsv'); then
   echo "recheck-open-prs: could not list open pull requests" >&2
   exit 2
@@ -171,12 +197,24 @@ while IFS=$'\t' read -r number title; do
     continue
   fi
 
+  if [ "$automerge" = "armed" ]; then
+    # Capture the commit metadata before the close clears the request, so the restore can put
+    # back what was there instead of a default message.
+    mkdir -p "$state/rearm/$number"
+    gh pr view "$number" --repo "$repo" --json autoMergeRequest \
+      --jq '.autoMergeRequest.commitHeadline // ""' > "$state/rearm/$number/headline" 2> /dev/null \
+      || : > "$state/rearm/$number/headline"
+    gh pr view "$number" --repo "$repo" --json autoMergeRequest \
+      --jq '.autoMergeRequest.commitBody // ""' > "$state/rearm/$number/body" 2> /dev/null \
+      || : > "$state/rearm/$number/body"
+  fi
+
   # Close and reopen produce the `reopened` event that resolves a fresh merge ref. The head is
-  # untouched, so a green review at the current head stays current.
-  printf '%s\n' "$number" >> "$pending"
+  # untouched, so a green review at the current head stays current. The record is written first
+  # and is NOT removed when the close reports failure: a close can be applied and still report
+  # one, and only the trap's read of the real state can tell those apart.
+  : > "$state/closed/$number"
   if ! gh pr close "$number" --repo "$repo" > /dev/null; then
-    # Never closed, so nothing to recover.
-    forget_pending "$number"
     echo "::error::#$number could not be closed; skipped without re-triggering"
     failed=$((failed + 1))
     continue
@@ -187,16 +225,20 @@ while IFS=$'\t' read -r number title; do
     failed=$((failed + 1))
     continue
   fi
-  forget_pending "$number"
+  rm -f "$state/closed/$number"
 
-  # Closing a PR clears an armed auto-merge request, so restore one that was armed. The
-  # repository allows squash only, so the method is not a guess.
   if [ "$automerge" = "armed" ]; then
-    if ! gh pr merge "$number" --repo "$repo" --auto --squash > /dev/null; then
+    headline=$(cat "$state/rearm/$number/headline" 2> /dev/null) || headline=""
+    body=$(cat "$state/rearm/$number/body" 2> /dev/null) || body=""
+    if ! rearm "$number" "$headline" "$body" > /dev/null; then
+      # Left in the rearm set on purpose: once the close has cleared the request, a later run
+      # cannot tell that this PR ever had auto-merge armed, so the obligation has to survive
+      # here or it is lost for good. The trap retries it.
       echo "::error::#$number was re-triggered but its auto-merge could not be re-armed"
       failed=$((failed + 1))
       continue
     fi
+    rm -rf "$state/rearm/$number"
     echo "  re-triggered #$number and re-armed auto-merge — $title"
   else
     echo "  re-triggered #$number — $title"

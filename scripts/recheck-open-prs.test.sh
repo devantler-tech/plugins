@@ -2,10 +2,9 @@
 # Self-test for recheck-open-prs.sh.
 #
 # Hermetic: stubs `gh` on PATH and records every call, so nothing here reaches the network or
-# mutates a real pull request. Each case asserts the property that makes the script safe to point
-# at a live repository — the ORDER of close and reopen, that a PR is never left closed, that
-# auto-merge is read fresh and restored only where it is armed NOW, that the sweep is complete
-# past one API page, and that a malformed listing is distinguishable from an empty one.
+# mutates a real pull request. The stub keeps per-PR state (open/closed, auto-merge armed or not,
+# its commit metadata) and answers reads from it, so the cases below assert what the script leaves
+# BEHIND — no pull request closed, no auto-merge lost — rather than only which calls it made.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,44 +27,94 @@ bad() {
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# Build a stub `gh`:
-#   $2  the TSV the paginated `api` listing emits (what the real --jq would produce)
-#   $3  a verb whose FIRST call fails; later calls succeed, so the exit trap's retry is exercised
-#       as a retry that can actually succeed rather than one that cannot
-#   $4  optional per-PR auto-merge states, "<number>=armed|none ..."; default none
-# `pr view` answers from a file rewritten per call, which is how the "disabled between the sweep
-# and the close" case is expressed.
+# make_gh <dir> <listing-tsv> [fail-verb] [armed-numbers]
+#   fail-verb      that verb's FIRST call fails; later calls succeed, so a recovery path is
+#                  exercised as one that can actually complete rather than one that cannot.
+#   armed-numbers  space-separated PR numbers that start with auto-merge armed.
+# The stub maintains real state under <dir>/db, so "was it left closed" is answerable.
 make_gh() {
-  local dir="$1" listing="$2" fail_verb="${3:-}" automerge="${4:-}"
-  mkdir -p "$dir/bin" "$dir/state"
+  local dir="$1" listing="$2" fail_verb="${3:-}" armed="${4:-}"
+  mkdir -p "$dir/bin" "$dir/db"
   printf '%s' "$listing" > "$dir/listing.tsv"
-  local pair
-  for pair in $automerge; do
-    printf '%s' "${pair#*=}" > "$dir/state/am-${pair%%=*}"
+  local n
+  for n in $armed; do
+    printf 'armed' > "$dir/db/am-$n"
+    printf 'custom subject %s' "$n" > "$dir/db/headline-$n"
+    printf 'custom body %s' "$n" > "$dir/db/body-$n"
   done
   cat > "$dir/bin/gh" <<EOF
 #!/usr/bin/env bash
+db="$dir/db"
 log="$dir/calls.log"
-case "\$1 \$2" in
-  "api --paginate")
-    if [ -f "$dir/listing-fails" ]; then exit 1; fi
-    cat "$dir/listing.tsv"
+fail_verb="$fail_verb"
+verb="\$1 \$2"
+
+# The paginated listing. Asserted on shape as well as content: the query must be passed as GET
+# fields, never spliced into the path, or a branch name containing & or # would select something
+# else entirely.
+if [ "\$verb" = "api --paginate" ]; then
+  printf '%s\n' "api \$*" >> "\$log"
+  [ -f "$dir/listing-fails" ] && exit 1
+  cat "$dir/listing.tsv"
+  exit 0
+fi
+
+n=\$3
+case "\$verb" in
+  "pr view")
+    field=""
+    for a in "\$@"; do [ "\$prev" = "--json" ] 2>/dev/null && field=\$a; prev=\$a; done
+    printf '%s\n' "pr view \$n \$field" >> "\$log"
+    [ -f "\$db/viewfail" ] && exit 1
+    case "\$field" in
+      state)
+        if [ -f "\$db/closed-\$n" ]; then printf 'CLOSED\n'; else printf 'OPEN\n'; fi
+        ;;
+      autoMergeRequest)
+        # Which projection is asked for is inferred from the --jq expression.
+        case "\$*" in
+          *commitHeadline*) cat "\$db/headline-\$n" 2>/dev/null; printf '\n' ;;
+          *commitBody*) cat "\$db/body-\$n" 2>/dev/null; printf '\n' ;;
+          *) if [ -f "\$db/am-\$n" ]; then printf 'armed\n'; else printf 'none\n'; fi ;;
+        esac
+        ;;
+    esac
+    # A hook the caller uses to change state between the sweep and this PR's close.
+    [ -x "$dir/on-view" ] && "$dir/on-view" "\$n"
     exit 0
     ;;
-  "pr view")
-    printf '%s\n' "pr view \$3" >> "\$log"
-    if [ -f "$dir/state/am-\$3" ]; then cat "$dir/state/am-\$3"; else printf 'none'; fi
-    printf '\n'
-    # A hook the caller can use to change state between the sweep and this PR's close.
-    [ -x "$dir/on-view" ] && "$dir/on-view" "\$3"
+  "pr close")
+    printf '%s\n' "pr close \$n" >> "\$log"
+    if [ "\$fail_verb" = "close-applied" ] && [ ! -f "\$db/failed-close" ]; then
+      # The ambiguous case: GitHub applies the close, the client still reports failure.
+      : > "\$db/failed-close"; : > "\$db/closed-\$n"; rm -f "\$db/am-\$n"; exit 1
+    fi
+    if [ "\$fail_verb" = "close" ] && [ ! -f "\$db/failed-close" ]; then
+      : > "\$db/failed-close"; exit 1
+    fi
+    : > "\$db/closed-\$n"
+    # Closing a pull request clears an armed auto-merge, exactly as GitHub does.
+    rm -f "\$db/am-\$n"
+    exit 0
+    ;;
+  "pr reopen")
+    printf '%s\n' "pr reopen \$n" >> "\$log"
+    if [ "\$fail_verb" = "reopen" ] && [ ! -f "\$db/failed-reopen" ]; then
+      : > "\$db/failed-reopen"; exit 1
+    fi
+    rm -f "\$db/closed-\$n"
+    exit 0
+    ;;
+  "pr merge")
+    printf '%s\n' "pr merge \$*" >> "\$log"
+    if [ "\$fail_verb" = "merge" ] && [ ! -f "\$db/failed-merge" ]; then
+      : > "\$db/failed-merge"; exit 1
+    fi
+    : > "\$db/am-\$n"
     exit 0
     ;;
 esac
-printf '%s\n' "\$1 \$2 \$3" >> "\$log"
-if [ -n "$fail_verb" ] && [ "\$2" = "$fail_verb" ] && [ ! -f "$dir/state/failed-$fail_verb" ]; then
-  : > "$dir/state/failed-$fail_verb"
-  exit 1
-fi
+printf '%s\n' "\$verb \$n" >> "\$log"
 exit 0
 EOF
   chmod +x "$dir/bin/gh"
@@ -86,6 +135,16 @@ run_raw() {
 }
 
 calls() { awk 'END { print NR }' "$1/calls.log"; }
+# Left closed? The stub's own state, not an inference from the call log.
+count_state() {
+  local dir=$1 prefix=$2 f c=0
+  for f in "$dir"/"$prefix"*; do
+    [ -e "$f" ] && c=$((c + 1))
+  done
+  printf '%s' "$c"
+}
+left_closed() { count_state "$1/db" closed-; }
+armed_count() { count_state "$1/db" am-; }
 
 TWO_PRS=$'11\tfirst\n22\tsecond\n'
 
@@ -117,10 +176,11 @@ d="$WORK/empty"
 make_gh "$d" ''
 out=$(run_script "$d")
 rc=$?
-if [ "$rc" -eq 0 ] && [ "$(calls "$d")" -eq 0 ] && [[ $out == *"nothing to re-trigger"* ]]; then
+if [ "$rc" -eq 0 ] && [[ $out == *"nothing to re-trigger"* ]] \
+  && [ "$(grep -c '^pr ' "$d/calls.log")" -eq 0 ]; then
   ok "an empty listing exits 0 and mutates nothing"
 else
-  bad "an empty listing exits 0 and mutates nothing" "exit $rc, $(calls "$d") call(s): $out"
+  bad "an empty listing exits 0 and mutates nothing" "exit $rc: $out" "$(cat "$d/calls.log")"
 fi
 
 # --- a failed listing is not an empty one --------------------------------
@@ -129,11 +189,25 @@ make_gh "$d" "$TWO_PRS"
 : > "$d/listing-fails"
 out=$(run_script "$d")
 rc=$?
-if [ "$rc" -eq 2 ] && [ "$(calls "$d")" -eq 0 ]; then
+if [ "$rc" -eq 2 ] && [ "$(grep -c '^pr ' "$d/calls.log")" -eq 0 ]; then
   ok "a failed listing exits 2 rather than reading as no open PRs"
 else
-  bad "a failed listing exits 2 rather than reading as no open PRs" \
-    "exit $rc, $(calls "$d") call(s): $out"
+  bad "a failed listing exits 2 rather than reading as no open PRs" "exit $rc: $out"
+fi
+
+# --- the branch reaches the API as a field, not as path text -------------
+# A branch may legally contain `&` or `#`; spliced into a query string it would select a
+# different set of pull requests, or truncate the query outright.
+d="$WORK/encode"
+make_gh "$d" ''
+out=$(run_script "$d" --base 'release&state=closed')
+rc=$?
+api=$(grep '^api ' "$d/calls.log")
+if [ "$rc" -eq 0 ] && [[ $api == *"--method GET"* ]] \
+  && [[ $api == *"-f base=release&state=closed"* ]] && [[ $api != *"repos/owner/name/pulls?"* ]]; then
+  ok "the base branch is passed as a GET field, never spliced into the path"
+else
+  bad "the base branch is passed as a GET field, never spliced into the path" "exit $rc" "$api"
 fi
 
 # --- dry run -------------------------------------------------------------
@@ -141,45 +215,49 @@ d="$WORK/dry"
 make_gh "$d" "$TWO_PRS"
 out=$(run_script "$d" --dry-run)
 rc=$?
-if [ "$rc" -eq 0 ] && [ "$(calls "$d")" -eq 0 ] && [[ $out == *"would re-trigger #11"* ]] \
-  && [[ $out == *"would re-trigger #22"* ]]; then
+if [ "$rc" -eq 0 ] && [ "$(grep -c '^pr ' "$d/calls.log")" -eq 0 ] \
+  && [[ $out == *"would re-trigger #11"* ]] && [[ $out == *"would re-trigger #22"* ]]; then
   ok "--dry-run reports every PR and mutates nothing"
 else
-  bad "--dry-run reports every PR and mutates nothing" "exit $rc, $(calls "$d") call(s): $out"
+  bad "--dry-run reports every PR and mutates nothing" "exit $rc: $out" "$(cat "$d/calls.log")"
 fi
 
 # --- the happy path, and the ORDER that makes it safe --------------------
 d="$WORK/happy"
-make_gh "$d" "$TWO_PRS" "" "22=armed"
+make_gh "$d" "$TWO_PRS" "" "22"
 out=$(run_script "$d")
 rc=$?
 log=$(cat "$d/calls.log")
-if [ "$rc" -eq 0 ] && [[ $log == *"pr close 11"* ]] && [[ $log == *"pr reopen 11"* ]]; then
-  ok "each PR is closed and reopened"
+if [ "$rc" -eq 0 ] && [ "$(left_closed "$d")" -eq 0 ]; then
+  ok "every PR is left open"
 else
-  bad "each PR is closed and reopened" "exit $rc" "$log"
+  bad "every PR is left open" "exit $rc" "$log"
 fi
-# Close BEFORE reopen for the same PR: the reverse order would leave it closed.
 if [ "$(grep -n 'pr close 11' "$d/calls.log" | cut -d: -f1)" -lt \
   "$(grep -n 'pr reopen 11' "$d/calls.log" | cut -d: -f1)" ]; then
   ok "close precedes reopen for the same PR"
 else
   bad "close precedes reopen for the same PR" "$log"
 fi
-# Auto-merge is read per PR, not once for the sweep — that is what makes the state current.
-if [ "$(grep -c 'pr view' "$d/calls.log")" -eq 2 ]; then
-  ok "auto-merge is read once per PR, immediately before closing it"
+if [ "$(grep -c 'pr view 11 autoMergeRequest' "$d/calls.log")" -ge 1 ] \
+  && [ "$(grep -c 'pr view 22 autoMergeRequest' "$d/calls.log")" -ge 1 ]; then
+  ok "auto-merge is read per PR, immediately before closing it"
 else
-  bad "auto-merge is read once per PR, immediately before closing it" "$log"
+  bad "auto-merge is read per PR, immediately before closing it" "$log"
 fi
-# Restored only where it was armed. Arming one that was not is a merge nobody asked for.
 if [ "$(grep -c 'pr merge 22' "$d/calls.log")" -eq 1 ] \
   && [ "$(grep -c 'pr merge 11' "$d/calls.log")" -eq 0 ]; then
   ok "auto-merge is re-armed only on the PR that had it armed"
 else
   bad "auto-merge is re-armed only on the PR that had it armed" "$log"
 fi
-# A draft is re-triggered like any other PR: a draft is exactly where a stale gate hides longest.
+# The maintainer's chosen squash message must survive the round trip; recreating the request with
+# defaults would discard it silently.
+if [[ $log == *"--subject custom subject 22"* ]] && [[ $log == *"--body custom body 22"* ]]; then
+  ok "a custom auto-merge subject and body are restored, not defaulted"
+else
+  bad "a custom auto-merge subject and body are restored, not defaulted" "$log"
+fi
 if [[ $log == *"pr close 22"* ]]; then
   ok "a draft PR is re-triggered too"
 else
@@ -187,15 +265,12 @@ else
 fi
 
 # --- auto-merge disabled between the sweep and the close -----------------
-# The window CodeRabbit named: a snapshot taken at listing time would re-arm an auto-merge the
-# user turned off in between. Reading per PR is what closes it, so the state is changed after
-# the listing and before this PR's own read.
 d="$WORK/amrace"
-make_gh "$d" "$TWO_PRS" "" "11=armed 22=armed"
+make_gh "$d" "$TWO_PRS" "" "11 22"
 cat > "$d/on-view" <<EOF
 #!/usr/bin/env bash
 # Once #11 has been read, the user disables auto-merge on #22.
-[ "\$1" = "11" ] && printf 'none' > "$d/state/am-22"
+[ "\$1" = "11" ] && rm -f "$d/db/am-22"
 exit 0
 EOF
 chmod +x "$d/on-view"
@@ -209,8 +284,6 @@ else
 fi
 
 # --- the sweep is complete past one API page -----------------------------
-# `gh pr list --limit N` caps at N and silently drops the rest, which is this script's own
-# failure mode one level down. 101 PRs is one more than that cap.
 d="$WORK/many"
 many=$(awk 'BEGIN { for (i = 1; i <= 101; i++) printf "%d\tpr %d\n", i, i }')
 make_gh "$d" "$many"
@@ -232,42 +305,56 @@ if [ "$rc" -eq 1 ] && [[ $out == *"could not be reopened"* ]]; then
 else
   bad "a failing reopen exits nonzero and names the PR" "exit $rc: $out"
 fi
-# The trap is the safety net, and the stub fails only the FIRST reopen — so this asserts the
-# retry actually succeeds, not merely that one was attempted.
-if [ "$(grep -c 'pr reopen 11' "$d/calls.log")" -ge 2 ] \
-  && [[ $out != *"could not be reopened; reopen it by hand"* ]]; then
-  ok "the exit trap retries a PR left closed, and the retry succeeds"
+if [ "$(left_closed "$d")" -eq 0 ] && [[ $out != *"reopen it by hand"* ]]; then
+  ok "the exit trap reopens a PR left closed, and the retry succeeds"
 else
-  bad "the exit trap retries a PR left closed, and the retry succeeds" "$(cat "$d/calls.log")" "$out"
+  bad "the exit trap reopens a PR left closed, and the retry succeeds" \
+    "$(left_closed "$d") still closed" "$out"
 fi
 
-# --- a failing close leaves that PR untouched ----------------------------
+# --- a close that was APPLIED but reported failure -----------------------
+# The dangerous shape: a lost response or a timeout. Dropping the record on a nonzero exit would
+# leave the PR closed with nothing tracking it, so the trap must decide from the real state.
+d="$WORK/closeambiguous"
+make_gh "$d" "$TWO_PRS" close-applied
+out=$(run_script "$d")
+rc=$?
+if [ "$(left_closed "$d")" -eq 0 ]; then
+  ok "a close that reported failure but was applied is still reopened"
+else
+  bad "a close that reported failure but was applied is still reopened" \
+    "exit $rc" "$(ls -1 "$d/db")" "$out"
+fi
+
+# --- a failing close that really did not apply ---------------------------
 d="$WORK/closefail"
 make_gh "$d" "$TWO_PRS" close
 out=$(run_script "$d")
 rc=$?
-# #11's close fails, so it is never reopened and never recorded as closed; #22 proceeds normally.
-if [ "$rc" -eq 1 ] && [ "$(grep -c 'pr reopen 11' "$d/calls.log")" -eq 0 ]; then
-  ok "a PR that could not be closed is never reopened, and the run fails"
+if [ "$rc" -eq 1 ] && [ "$(left_closed "$d")" -eq 0 ]; then
+  ok "a PR whose close failed is left open, and the run fails"
 else
-  bad "a PR that could not be closed is never reopened, and the run fails" \
-    "exit $rc" "$(cat "$d/calls.log")"
+  bad "a PR whose close failed is left open, and the run fails" "exit $rc" "$(cat "$d/calls.log")"
+fi
+
+# --- a transient re-arm failure is recovered, not lost -------------------
+# Once the close has cleared the request, a later run cannot tell the PR ever had auto-merge
+# armed — so if this run drops the obligation, it is gone for good.
+d="$WORK/mergefail"
+make_gh "$d" "$TWO_PRS" merge "22"
+out=$(run_script "$d")
+rc=$?
+if [ "$rc" -eq 1 ] && [ "$(armed_count "$d")" -eq 1 ] && [[ $out != *"re-arm it by hand"* ]]; then
+  ok "a transient re-arm failure is retried by the exit trap and restored"
+else
+  bad "a transient re-arm failure is retried by the exit trap and restored" \
+    "exit $rc, armed=$(armed_count "$d")" "$out"
 fi
 
 # --- an unreadable auto-merge state leaves the PR untouched --------------
 d="$WORK/amfail"
 make_gh "$d" "$TWO_PRS"
-cat > "$d/bin/gh" <<EOF
-#!/usr/bin/env bash
-log="$d/calls.log"
-case "\$1 \$2" in
-  "api --paginate") cat "$d/listing.tsv"; exit 0 ;;
-  "pr view") printf '%s\n' "pr view \$3" >> "\$log"; exit 1 ;;
-esac
-printf '%s\n' "\$1 \$2 \$3" >> "\$log"
-exit 0
-EOF
-chmod +x "$d/bin/gh"
+: > "$d/db/viewfail"
 out=$(run_script "$d")
 rc=$?
 if [ "$rc" -eq 1 ] && [ "$(grep -c 'pr close' "$d/calls.log")" -eq 0 ] \

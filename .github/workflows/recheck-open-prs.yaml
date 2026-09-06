@@ -14,10 +14,13 @@ name: 🔁 Recheck open PRs
 # resolves a fresh merge ref, and why it needs an App token.
 
 on:
+  # Deliberately NOT a `paths:` filter. GitHub caps a path filter's diff at 300 files, so a merge
+  # that changes more than that — a large skill sync, a generated-content update — can change
+  # `ci.yaml` without the filter seeing it, leaving every open PR on its stale result precisely
+  # when a gate moved. The job compares the pushed range itself, which has no such cap, and exits
+  # early when the CI definition did not change.
   push:
     branches: [main]
-    paths:
-      - .github/workflows/ci.yaml
   workflow_dispatch:
     inputs:
       dry-run:
@@ -45,10 +48,40 @@ jobs:
       - name: 📄 Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          # The CI-definition check below diffs the pushed range, so both endpoints must be in
+          # the local history.
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: 🔍 Did the CI definition change?
+        id: gate
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          # A manual dispatch always runs: it exists to force a sweep.
+          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A missing or unreachable `before` (a new branch, a force push, a squashed history)
+          # leaves the range unknowable. Sweep rather than skip: a needless recheck costs a CI
+          # run, a missed one leaves a gate unapplied.
+          if [ -z "${BEFORE}" ] || ! git cat-file -e "${BEFORE}^{commit}" 2> /dev/null; then
+            echo "No usable before-commit for this push — sweeping."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "${BEFORE}" "${AFTER}" | grep -qx '.github/workflows/ci.yaml'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "The CI definition did not change in this push — nothing to recheck."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: 🔑 Generate GitHub App token
         id: app-token
+        if: steps.gate.outputs.changed == 'true'
         # Events produced with GITHUB_TOKEN do not start new workflow runs, so a reopen
         # performed with it would be silent — the same reason update-agent-skills.yaml mints an
         # App token to open its PR.
@@ -59,6 +92,7 @@ jobs:
           permission-pull-requests: write
 
       - name: 🔁 Re-trigger open pull requests
+        if: steps.gate.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
