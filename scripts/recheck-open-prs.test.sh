@@ -60,23 +60,36 @@ if [ "\$verb" = "api --paginate" ]; then
 fi
 
 n=\$3
+fields=""
+prev=""
+for a in "\$@"; do
+  [ "\$prev" = "--json" ] && fields=\$a
+  prev=\$a
+done
+
 case "\$verb" in
   "pr view")
-    field=""
-    for a in "\$@"; do [ "\$prev" = "--json" ] 2>/dev/null && field=\$a; prev=\$a; done
-    printf '%s\n' "pr view \$n \$field" >> "\$log"
+    printf '%s\n' "pr view \$n \$fields" >> "\$log"
     [ -f "\$db/viewfail" ] && exit 1
-    case "\$field" in
+    if [ -f "\$db/closed-\$n" ]; then st=CLOSED; else st=OPEN; fi
+    [ -f "\$db/merged-\$n" ] && st=MERGED
+    if [ -f "\$db/am-\$n" ]; then
+      method=\$(cat "\$db/method-\$n" 2>/dev/null || printf 'SQUASH')
+      head=\$(cat "\$db/headline-\$n" 2>/dev/null)
+      body=\$(cat "\$db/body-\$n" 2>/dev/null)
+      am=\$(printf '{"mergeMethod":"%s","commitHeadline":"%s","commitBody":"%s"}' "\$method" "\$head" "\$body")
+    else
+      am=null
+    fi
+    case "\$fields" in
+      "state,autoMergeRequest")
+        printf '{"state":"%s","autoMergeRequest":%s}\n' "\$st" "\$am"
+        ;;
       state)
-        if [ -f "\$db/closed-\$n" ]; then printf 'CLOSED\n'; else printf 'OPEN\n'; fi
+        printf '%s\n' "\$st"
         ;;
       autoMergeRequest)
-        # Which projection is asked for is inferred from the --jq expression.
-        case "\$*" in
-          *commitHeadline*) cat "\$db/headline-\$n" 2>/dev/null; printf '\n' ;;
-          *commitBody*) cat "\$db/body-\$n" 2>/dev/null; printf '\n' ;;
-          *) if [ -f "\$db/am-\$n" ]; then printf 'armed\n'; else printf 'none\n'; fi ;;
-        esac
+        if [ "\$am" = null ]; then printf 'none\n'; else printf 'armed\n'; fi
         ;;
     esac
     # A hook the caller uses to change state between the sweep and this PR's close.
@@ -239,11 +252,11 @@ if [ "$(grep -n 'pr close 11' "$d/calls.log" | cut -d: -f1)" -lt \
 else
   bad "close precedes reopen for the same PR" "$log"
 fi
-if [ "$(grep -c 'pr view 11 autoMergeRequest' "$d/calls.log")" -ge 1 ] \
-  && [ "$(grep -c 'pr view 22 autoMergeRequest' "$d/calls.log")" -ge 1 ]; then
-  ok "auto-merge is read per PR, immediately before closing it"
+if [ "$(grep -c 'pr view 11 state,autoMergeRequest' "$d/calls.log")" -ge 1 ] \
+  && [ "$(grep -c 'pr view 22 state,autoMergeRequest' "$d/calls.log")" -ge 1 ]; then
+  ok "state and auto-merge are read per PR, immediately before closing it"
 else
-  bad "auto-merge is read per PR, immediately before closing it" "$log"
+  bad "state and auto-merge are read per PR, immediately before closing it" "$log"
 fi
 if [ "$(grep -c 'pr merge 22' "$d/calls.log")" -eq 1 ] \
   && [ "$(grep -c 'pr merge 11' "$d/calls.log")" -eq 0 ]; then
@@ -358,11 +371,56 @@ make_gh "$d" "$TWO_PRS"
 out=$(run_script "$d")
 rc=$?
 if [ "$rc" -eq 1 ] && [ "$(grep -c 'pr close' "$d/calls.log")" -eq 0 ] \
-  && [[ $out == *"auto-merge state could not be read"* ]]; then
-  ok "a PR whose auto-merge state cannot be read is left untouched"
+  && [[ $out == *"state could not be read"* ]]; then
+  ok "a PR whose state cannot be read is left untouched"
 else
-  bad "a PR whose auto-merge state cannot be read is left untouched" \
+  bad "a PR whose state cannot be read is left untouched" \
     "exit $rc" "$(cat "$d/calls.log")" "$out"
+fi
+
+# --- the original merge strategy survives the round trip -----------------
+# Recreating a merge-commit or rebase auto-merge as a squash would change the merge behaviour the
+# maintainer chose, not just its message.
+d="$WORK/strategy"
+make_gh "$d" "$TWO_PRS" "" "11 22"
+printf 'REBASE' > "$d/db/method-11"
+printf 'MERGE' > "$d/db/method-22"
+out=$(run_script "$d")
+rc=$?
+log=$(cat "$d/calls.log")
+if [ "$rc" -eq 0 ] && [[ $log == *"pr merge 11 --repo owner/name --auto --rebase"* ]] \
+  && [[ $log == *"pr merge 22 --repo owner/name --auto --merge"* ]]; then
+  ok "the original auto-merge strategy is restored, not replaced with squash"
+else
+  bad "the original auto-merge strategy is restored, not replaced with squash" "exit $rc" "$log"
+fi
+# A rebase carries no commit message, so the message flags must not ride along with it.
+if [[ $log != *"--rebase --subject"* ]] && [[ $log == *"--merge --subject custom subject 22"* ]]; then
+  ok "commit metadata accompanies a merge or squash, never a rebase"
+else
+  bad "commit metadata accompanies a merge or squash, never a rebase" "$log"
+fi
+
+# --- a PR closed after the listing is left alone -------------------------
+# The listing is a snapshot. Reopening a pull request the maintainer closed in the meantime would
+# reverse a deliberate act, and a read of auto-merge alone would not notice: it succeeds for a
+# closed pull request too.
+d="$WORK/closedafter"
+make_gh "$d" "$TWO_PRS"
+cat > "$d/on-view" <<EOF
+#!/usr/bin/env bash
+# While #11 is being handled, the maintainer closes #22.
+[ "\$1" = "11" ] && : > "$d/db/closed-22"
+exit 0
+EOF
+chmod +x "$d/on-view"
+out=$(run_script "$d")
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(grep -c 'pr close 22' "$d/calls.log")" -eq 0 ] \
+  && [ "$(grep -c 'pr reopen 22' "$d/calls.log")" -eq 0 ] && [[ $out == *"skipped #22"* ]]; then
+  ok "a PR closed after the listing is skipped, not reopened"
+else
+  bad "a PR closed after the listing is skipped, not reopened" "exit $rc" "$(cat "$d/calls.log")" "$out"
 fi
 
 # --- a malformed listing is an error, never a shorter list ---------------

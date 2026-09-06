@@ -9,16 +9,26 @@ name: 🔁 Recheck open PRs
 # GitHub's own mechanism for this is `strict_required_status_checks_policy` ("require branches to
 # be up to date before merging"), but it is declared org-wide and Observe-only in
 # devantler-tech/.github, so it is not this repository's to flip. This workflow is the
-# repository-scoped equivalent: when the CI definition changes on `main`, ask every open PR to run
-# again. See scripts/recheck-open-prs.sh for why a close-and-reopen is the only re-trigger that
-# resolves a fresh merge ref, and why it needs an App token.
+# repository-scoped equivalent: when `main` moves, ask every open PR to run again. See
+# scripts/recheck-open-prs.sh for why a close-and-reopen is the only re-trigger that resolves a
+# fresh merge ref, and why it needs an App token.
+#
+# WHY EVERY PUSH, RATHER THAN A NARROWER TRIGGER
+#   Deciding "did a gate change?" was tried and cannot be made correct here.
+#   - A `paths:` filter is capped at 300 files, so a large sync can change `ci.yaml` without the
+#     filter seeing it — the failure this workflow exists to prevent, hidden behind its trigger.
+#   - Diffing the pushed range instead loses a push that the concurrency group coalesced away: a
+#     gate change queued behind a running sweep is replaced by a later unrelated push, whose own
+#     range shows no gate change, and nothing ever sweeps for it.
+#   - Testing `ci.yaml` alone misses a gate STRENGTHENED in its implementation. `ci.yaml` runs
+#     `scripts/validate-manifests.sh` and friends; adding a rejection there changes what the
+#     required check accepts while `ci.yaml` itself is untouched. Enumerating every file that
+#     implements a gate is a list that goes stale silently.
+#   Every push it is. The cost is bounded and visible — each merge re-runs the open PRs' checks —
+#   and on this repository a merge already invalidates every open PR, since a plugin's version is
+#   its cache key and lives in files every plugin change touches.
 
 on:
-  # Deliberately NOT a `paths:` filter. GitHub caps a path filter's diff at 300 files, so a merge
-  # that changes more than that — a large skill sync, a generated-content update — can change
-  # `ci.yaml` without the filter seeing it, leaving every open PR on its stale result precisely
-  # when a gate moved. The job compares the pushed range itself, which has no such cap, and exits
-  # early when the CI definition did not change.
   push:
     branches: [main]
   workflow_dispatch:
@@ -32,7 +42,7 @@ concurrency:
   # One recheck at a time: two overlapping passes would close the same PR twice and race each
   # other's reopen. `cancel-in-progress: false` protects the pass that is already running; a
   # PENDING pass discarded by a third push loses nothing, because every pass sweeps every open
-  # PR, so the newest one does strictly more than the one it displaced.
+  # PR unconditionally, so the newest one does strictly more than the one it displaced.
   group: recheck-open-prs
   cancel-in-progress: false
 
@@ -48,51 +58,26 @@ jobs:
       - name: 📄 Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # The CI-definition check below diffs the pushed range, so both endpoints must be in
-          # the local history.
-          fetch-depth: 0
           persist-credentials: false
-
-      - name: 🔍 Did the CI definition change?
-        id: gate
-        env:
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.sha }}
-        run: |
-          # A manual dispatch always runs: it exists to force a sweep.
-          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # A missing or unreachable `before` (a new branch, a force push, a squashed history)
-          # leaves the range unknowable. Sweep rather than skip: a needless recheck costs a CI
-          # run, a missed one leaves a gate unapplied.
-          if [ -z "${BEFORE}" ] || ! git cat-file -e "${BEFORE}^{commit}" 2> /dev/null; then
-            echo "No usable before-commit for this push — sweeping."
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if git diff --name-only "${BEFORE}" "${AFTER}" | grep -qx '.github/workflows/ci.yaml'; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "The CI definition did not change in this push — nothing to recheck."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: 🔑 Generate GitHub App token
         id: app-token
-        if: steps.gate.outputs.changed == 'true'
-        # Events produced with GITHUB_TOKEN do not start new workflow runs, so a reopen
-        # performed with it would be silent — the same reason update-agent-skills.yaml mints an
-        # App token to open its PR.
+        # Events produced with GITHUB_TOKEN do not start new workflow runs, so a reopen performed
+        # with it would be silent — the same reason update-agent-skills.yaml mints an App token to
+        # open its PR.
+        #
+        # `contents: write` is not spare: restoring an auto-merge request with `gh pr merge --auto`
+        # needs it as well as pull-requests write. Without it the close and reopen would succeed
+        # and every re-arm would fail, so a PR that arrived with auto-merge armed would be left
+        # without it.
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
           permission-pull-requests: write
 
       - name: 🔁 Re-trigger open pull requests
-        if: steps.gate.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}

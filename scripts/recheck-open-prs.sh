@@ -85,6 +85,12 @@ command -v gh > /dev/null 2>&1 || {
   echo "recheck-open-prs: gh is required" >&2
   exit 2
 }
+# Used to take every field of a pull request's auto-merge request out of ONE response, so a
+# transient failure cannot be mistaken for "no custom metadata".
+command -v jq > /dev/null 2>&1 || {
+  echo "recheck-open-prs: jq is required" >&2
+  exit 2
+}
 
 state=$(mktemp -d) || exit 2
 mkdir -p "$state/closed" "$state/rearm" || exit 2
@@ -98,7 +104,7 @@ mkdir -p "$state/closed" "$state/rearm" || exit 2
 # while older versions — including the one CI installs — report every line of its body as
 # unreachable, SC2317. A directive naming only one version's code passes here and fails there.
 settle() {
-  local f n st headline body
+  local f n st method headline body
   for f in "$state/closed"/*; do
     [ -e "$f" ] || continue
     n=${f##*/}
@@ -118,22 +124,33 @@ settle() {
     st=$(gh pr view "$n" --repo "$repo" --json autoMergeRequest \
       --jq 'if .autoMergeRequest == null then "none" else "armed" end' 2> /dev/null) || st=none
     [ "$st" = "armed" ] && continue
+    method=$(cat "$state/rearm/$n/method" 2> /dev/null) || method=""
     headline=$(cat "$state/rearm/$n/headline" 2> /dev/null) || headline=""
     body=$(cat "$state/rearm/$n/body" 2> /dev/null) || body=""
     echo "recheck-open-prs: restoring auto-merge on #$n" >&2
-    rearm "$n" "$headline" "$body" > /dev/null 2>&1 \
+    rearm "$n" "$method" "$headline" "$body" > /dev/null 2>&1 \
       || echo "::error::#$n auto-merge could not be restored; re-arm it by hand" >&2
   done
   rm -rf "$state"
 }
 
-# Re-arm auto-merge, preserving the commit metadata the request carried. Recreating it with
-# defaults would silently discard a squash subject or body someone chose deliberately.
+# Re-arm auto-merge exactly as it was: the same strategy, and the same commit metadata.
+# Recreating it as a default squash would silently change both the merge behaviour and the
+# message someone chose deliberately.
 rearm() {
-  local n=$1 headline=$2 body=$3
-  set -- "$n" --repo "$repo" --auto --squash
-  [ -z "$headline" ] || set -- "$@" --subject "$headline"
-  [ -z "$body" ] || set -- "$@" --body "$body"
+  local n=$1 method=$2 headline=$3 body=$4 flag
+  case "$method" in
+    MERGE) flag=--merge ;;
+    REBASE) flag=--rebase ;;
+    # An unknown or missing method falls back to squash, which every ruleset here permits.
+    *) flag=--squash ;;
+  esac
+  set -- "$n" --repo "$repo" --auto "$flag"
+  # A rebase carries no commit message of its own, so those flags apply to the other two only.
+  if [ "$flag" != "--rebase" ]; then
+    [ -z "$headline" ] || set -- "$@" --subject "$headline"
+    [ -z "$body" ] || set -- "$@" --body "$body"
+  fi
   gh pr merge "$@"
 }
 
@@ -190,23 +207,35 @@ while IFS=$'\t' read -r number title; do
   # Read auto-merge fresh, immediately before closing, so the decision to restore it is based on
   # the state that is true now rather than when the sweep started. A read that fails leaves the
   # PR untouched: closing it without knowing would risk silently dropping an armed auto-merge.
-  if ! automerge=$(gh pr view "$number" --repo "$repo" --json autoMergeRequest \
-    --jq 'if .autoMergeRequest == null then "none" else "armed" end'); then
-    echo "::error::#$number auto-merge state could not be read; left untouched"
+  # ONE read, capturing everything this PR's handling depends on. Splitting it across calls made
+  # a transient failure on a later call indistinguishable from "no custom metadata", which would
+  # then be restored as GitHub's default message — a silent change to someone's chosen commit.
+  # A failed read leaves the PR untouched: closing it without knowing its state would risk both
+  # reversing a deliberate closure and dropping an armed auto-merge.
+  if ! snapshot=$(gh pr view "$number" --repo "$repo" --json state,autoMergeRequest) \
+    || [ -z "$snapshot" ]; then
+    echo "::error::#$number state could not be read; left untouched"
     failed=$((failed + 1))
     continue
   fi
 
+  pr_state=$(printf '%s' "$snapshot" | jq -r '.state // ""')
+  # The listing is a snapshot; a maintainer may have closed or merged this PR since. Reopening it
+  # would reverse that deliberate act, and the `autoMergeRequest` read alone would not have
+  # noticed — it succeeds for a closed pull request too.
+  if [ "$pr_state" != "OPEN" ]; then
+    echo "  skipped #$number — no longer open (state=${pr_state:-unknown})"
+    continue
+  fi
+
+  automerge=$(printf '%s' "$snapshot" | jq -r 'if .autoMergeRequest == null then "none" else "armed" end')
   if [ "$automerge" = "armed" ]; then
-    # Capture the commit metadata before the close clears the request, so the restore can put
-    # back what was there instead of a default message.
+    # Capture the strategy and commit metadata before the close clears the request, so the
+    # restore puts back what was there rather than a default squash.
     mkdir -p "$state/rearm/$number"
-    gh pr view "$number" --repo "$repo" --json autoMergeRequest \
-      --jq '.autoMergeRequest.commitHeadline // ""' > "$state/rearm/$number/headline" 2> /dev/null \
-      || : > "$state/rearm/$number/headline"
-    gh pr view "$number" --repo "$repo" --json autoMergeRequest \
-      --jq '.autoMergeRequest.commitBody // ""' > "$state/rearm/$number/body" 2> /dev/null \
-      || : > "$state/rearm/$number/body"
+    printf '%s' "$snapshot" | jq -r '.autoMergeRequest.mergeMethod // ""' > "$state/rearm/$number/method"
+    printf '%s' "$snapshot" | jq -r '.autoMergeRequest.commitHeadline // ""' > "$state/rearm/$number/headline"
+    printf '%s' "$snapshot" | jq -r '.autoMergeRequest.commitBody // ""' > "$state/rearm/$number/body"
   fi
 
   # Close and reopen produce the `reopened` event that resolves a fresh merge ref. The head is
@@ -228,9 +257,10 @@ while IFS=$'\t' read -r number title; do
   rm -f "$state/closed/$number"
 
   if [ "$automerge" = "armed" ]; then
+    method=$(cat "$state/rearm/$number/method" 2> /dev/null) || method=""
     headline=$(cat "$state/rearm/$number/headline" 2> /dev/null) || headline=""
     body=$(cat "$state/rearm/$number/body" 2> /dev/null) || body=""
-    if ! rearm "$number" "$headline" "$body" > /dev/null; then
+    if ! rearm "$number" "$method" "$headline" "$body" > /dev/null; then
       # Left in the rearm set on purpose: once the close has cleared the request, a later run
       # cannot tell that this PR ever had auto-merge armed, so the obligation has to survive
       # here or it is lost for good. The trap retries it.
