@@ -8,6 +8,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SURVEYOR="$HERE/../agents/portfolio-surveyor.agent.md"
 
+# Report a harness failure on stderr and stop; contract diagnostics use stdout.
 fail() {
   printf 'surveyor review contract: FAIL — %s\n' "$*" >&2
   exit 1
@@ -34,17 +35,17 @@ scope() {
   esac
 }
 
-# A small test-only extractor. Both boundaries must exist exactly once (except
-# the final section, which ends at EOF). Wrapping and whitespace are immaterial.
+# A small test-only extractor. Both boundaries must exist exactly once, in order
+# (the final section ends at the next heading or EOF). Whitespace is immaterial.
 section_text() {
   local source=$1
   awk -v start="$START" -v end="$END" '
-    index($0, start) == 1 { starts++; inside = 1 }
-    end != "" && index($0, end) == 1 { ends++; inside = 0 }
+    index($0, start) == 1 { starts++; start_line = NR; inside = 1 }
+    end != "" && index($0, end) == 1 { ends++; end_line = NR; inside = 0 }
     end == "" && inside && /^#/ && index($0, start) != 1 { inside = 0 }
     inside { text = text " " $0 }
     END {
-      if (starts != 1 || (end != "" && ends != 1)) exit 1
+      if (starts != 1 || (end != "" && (ends != 1 || end_line <= start_line))) exit 1
       gsub(/[[:space:]]+/, " ", text)
       sub(/^ /, "", text); sub(/ $/, "", text)
       print text
@@ -52,6 +53,7 @@ section_text() {
   ' "$source"
 }
 
+# Emit the stable ID, owning scope, and required clause for each contract.
 # The last field may itself contain pipes (the digest's literal grammar).
 requirements() {
   cat <<'CLAUSES'
@@ -111,6 +113,8 @@ D08|digest_rules|Apply the consumer's declared duration and timestamp source fro
 CLAUSES
 }
 
+# Check a supplied definition without changing it. Print every missing rule on
+# stdout and return 1 if any rule or section is missing; otherwise return 0.
 check_contract() {
   local source=$1 id group clause text missing=0 START END
   while IFS='|' read -r id group clause; do
@@ -136,6 +140,34 @@ fi
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 check_contract "$SURVEYOR" || fail 'the shipped definition lost an operative contract'
+
+# Boundary order matters independently of clause presence. Preserve every line
+# while moving the connector's end before its start, then try rescuing a removed
+# clause from a later example. Neither malformed definition may be accepted.
+scope connector
+awk -v start="$START" -v end="$END" '
+  { lines[NR] = $0 }
+  index($0, start) == 1 { starting = NR }
+  index($0, end) == 1 { ending = NR }
+  END {
+    for (i = 1; i <= NR; i++) {
+      if (i == starting) print lines[ending]
+      if (i != ending) print lines[i]
+    }
+  }
+' "$SURVEYOR" > "$WORK/reordered.md"
+awk '
+  { gsub(/Require at least a 10-character prefix/, ""); print }
+  END { print "\n## Non-operative example\nRequire at least a 10-character prefix" }
+' "$WORK/reordered.md" > "$WORK/reordered-rescued.md"
+awk -v end="$END" 'index($0, end) != 1' "$SURVEYOR" > "$WORK/missing-end.md"
+awk -v end="$END" '{ print; if (index($0, end) == 1) print }' "$SURVEYOR" > "$WORK/repeated-end.md"
+for boundary in reordered reordered-rescued missing-end repeated-end; do
+  if check_contract "$WORK/$boundary.md" > "$WORK/output"; then
+    fail "$boundary: malformed section boundaries were accepted"
+  fi
+  grep -Fq 'missing section: connector (' "$WORK/output" || fail "$boundary: unrelated rejection"
+done
 
 # Replace just one already-validated section. The replacement retains its start
 # marker and its neighboring section; the other sections remain byte-identical.
@@ -175,4 +207,4 @@ if check_contract "$WORK/empty.md" > "$WORK/output"; then
   fail 'an empty definition was accepted'
 fi
 
-printf 'surveyor review contract: PASS (%s clauses; each removal rejected, each reflow accepted; empty definition rejected)\n' "$total"
+printf 'surveyor review contract: PASS (%s clauses; each removal rejected, each reflow accepted; four malformed boundaries and empty definition rejected)\n' "$total"

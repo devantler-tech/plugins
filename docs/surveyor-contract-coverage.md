@@ -8,7 +8,9 @@ drift, not whether a model follows the instructions. It introduces no runtime po
 
 Every clause has a stable test ID. Each must appear inside its own section; the suite removes it
 independently and requires rejection even with a copy elsewhere in the document. The corresponding
-whitespace-only reflow must pass. Empty definitions fail. These controls demonstrate the guards can
+whitespace-only reflow must pass. Missing, repeated, or reversed section boundaries fail; a reversed
+boundary cannot extend a scope to an example at the end of the file. Empty definitions fail.
+These controls demonstrate the guards can
 detect missing operative instructions without requiring the entire role to retain identical bytes.
 They do not parse arbitrary Markdown or prove that nearby contradictory prose is harmless.
 
