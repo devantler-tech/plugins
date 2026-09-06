@@ -200,6 +200,8 @@ GH_API_FIELD_FLAGS=" -f --raw-field -F --field --input "
 # is denied by name unless its flag is listed here, where a leading dash is part of the
 # value's own grammar and the value can name no program, host, or file:
 #   --search       a server-side query expression (`-label:foo` negates a qualifier)
+#   --label, --milestone   free-form server-side filter strings — a label or milestone
+#                  title may itself begin with a dash (`--label -bug`)
 #   --jq / -q      a jq program (`-1`, `-(.x)`) run by gh's embedded jq; its reach into
 #                  the process environment is refused separately by check_gh_flag_value
 #   --template/-t  a Go template rendered locally, with no exec or file primitive
@@ -209,7 +211,7 @@ GH_API_FIELD_FLAGS=" -f --raw-field -F --field --input "
 #                  approxidate parser accepts in free form (`--since -yesterday`)
 # Everything else — a count, a path, a ref, a format name — has a grammar no
 # dash-letter word can satisfy, so a flag-shaped value there is denied by name.
-GH_DASH_VALUE_FLAGS=" --search --jq -q --template -t "
+GH_DASH_VALUE_FLAGS=" --search --label --milestone --jq -q --template -t "
 GIT_DASH_VALUE_FLAGS=" --grep -S -G --author --committer --since --until --after --before "
 
 # git options. Read verbs are not enough on their own: several options make git

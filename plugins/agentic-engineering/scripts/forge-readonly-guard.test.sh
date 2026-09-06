@@ -132,6 +132,12 @@ expect_allow 'a --search expression may begin with a dash' \
   "gh pr list --repo devantler-tech/platform --search -label:blocked --limit 10"
 expect_allow 'a --jq program may begin with a dash' \
   "gh api repos/devantler-tech/platform/pulls --jq -1"
+# A label or milestone title is a free-form server-side filter and may itself begin
+# with a dash; neither can name a program, a host, or a file.
+expect_allow 'a --label filter may begin with a dash' \
+  "gh issue list --repo devantler-tech/platform --label -bug --limit 10"
+expect_allow 'a --milestone filter may begin with a dash' \
+  "gh pr list --repo devantler-tech/platform --milestone -v2 --limit 10"
 expect_allow 'a git --grep pattern may begin with a dash' \
   "git log --oneline --grep -x"
 # A dash followed by a digit is a number, not a flag: git documents `--max-count -1`
