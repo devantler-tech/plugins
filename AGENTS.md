@@ -272,7 +272,7 @@ runs under an App token because events produced with `GITHUB_TOKEN` start no wor
 [`recheck-open-prs.sh`](scripts/recheck-open-prs.sh) carries the details and never leaves a PR closed;
 its self-test proves that, the close-before-reopen order, and that an armed auto-merge is restored —
 with its original strategy and commit message — without one ever being armed that was not. One
-subtlety is worth knowing before touching it: an armed auto-merge is restored only after a check run
+subtlety is worth knowing before touching it: an armed auto-merge is restored only after a workflow run
 from the reopen is observable. Until then the newest result at that commit is still the pre-gate
 green, and `--auto` merges as soon as the requirements read as met — so arming early could merge the
 pull request past the very gate the sweep is applying. When no such run appears, the script declines

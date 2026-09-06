@@ -43,7 +43,7 @@ set -uo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-usage: recheck-open-prs.sh --repo OWNER/NAME [--base BRANCH] [--required-check NAME] [--dry-run]
+usage: recheck-open-prs.sh --repo OWNER/NAME [--base BRANCH] [--dry-run]
 EOF
   exit 2
 }
@@ -51,10 +51,6 @@ EOF
 repo=""
 base="main"
 dry_run=0
-# The check whose fresh run proves the reopen has been picked up. Named rather than "any check",
-# because another integration's run would otherwise satisfy the wait while the required
-# workflow's own run for the reopen still did not exist.
-required_check="CI - Required Checks"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -66,11 +62,6 @@ while [ "$#" -gt 0 ]; do
     --base)
       [ "$#" -ge 2 ] || usage
       base=$2
-      shift 2
-      ;;
-    --required-check)
-      [ "$#" -ge 2 ] || usage
-      required_check=$2
       shift 2
       ;;
     --dry-run)
@@ -90,15 +81,6 @@ case "$repo" in
   *) usage ;;
 esac
 
-# The name is interpolated into a jq program, so a quote or backslash in it would change that
-# program rather than the value it compares against.
-if [ -z "$required_check" ] \
-  || [ "${required_check//\"/}" != "$required_check" ] \
-  || [ "${required_check//\\/}" != "$required_check" ]; then
-  echo "recheck-open-prs: --required-check must be a plain name (no quotes or backslashes)" >&2
-  exit 2
-fi
-
 command -v gh > /dev/null 2>&1 || {
   echo "recheck-open-prs: gh is required" >&2
   exit 2
@@ -113,7 +95,7 @@ command -v jq > /dev/null 2>&1 || {
 state=$(mktemp -d) || exit 2
 mkdir -p "$state/closed" "$state/rearm" || exit 2
 
-# How long to wait for the reopened event's check run before declining to re-arm auto-merge.
+# How long to wait for the reopened event's own workflow run before declining to re-arm.
 # Overridable so the self-test does not sleep.
 CHECK_WAIT_SECONDS=${RECHECK_CHECK_WAIT_SECONDS:-90}
 CHECK_POLL_SECONDS=${RECHECK_CHECK_POLL_SECONDS:-3}
@@ -155,7 +137,7 @@ settle() {
     # The same wait the main path performs, and for the same reason: arming auto-merge while the
     # pre-gate green is still the newest result can merge the PR before the new run exists.
     if ! await_fresh_check "$sha" "$baseline"; then
-      echo "::error::#$n auto-merge was NOT restored: no check run from the reopen appeared, and arming it now could merge the PR on the pre-gate result. Re-arm it by hand once its checks are running." >&2
+      echo "::error::#$n auto-merge was NOT restored: no pull_request run from the reopen appeared, and arming it now could merge the PR on the pre-gate result. Re-arm it by hand once its checks are running." >&2
       continue
     fi
     echo "recheck-open-prs: restoring auto-merge on #$n" >&2
@@ -165,21 +147,26 @@ settle() {
   rm -rf "$state"
 }
 
-# The highest id among check runs NAMED $required_check at a commit, or 0 when it has none. Ids
-# increase, so a larger one later means a new run of that check exists — which needs no clock and
-# no assumption about either side's timekeeping.
+# The highest WORKFLOW RUN id for a `pull_request` event at a commit, or 0 when it has none.
 #
-# Filtered by name on purpose. Any check run would satisfy an unfiltered comparison, including one
-# another integration or a manual rerun created after the baseline, so the wait could pass while
-# the required workflow's own run for the reopen still did not exist.
+# Workflow runs, not check runs, and this distinction is the whole point. Re-running an existing
+# workflow keeps its run id and adds an attempt, but it creates fresh CHECK runs with new ids and
+# the same name — so a manual rerun of the pre-gate run would satisfy a check-run comparison while
+# no run for the reopen existed at all. A new `pull_request` run id can only come from a new
+# `pull_request` event, which is exactly what is being waited for. Another such event (a push, say)
+# would satisfy it too, and legitimately: it also resolves a fresh merge ref.
 #
-# Exits non-zero when the read fails, so a caller can tell "no runs yet" (0) from "unknown".
-newest_check() {
-  gh api "repos/${repo}/commits/$1/check-runs" \
-    --jq "[.check_runs[] | select(.name == \"${required_check}\") | .id] | max // 0" 2> /dev/null
+# Ids increase, so a larger one later means a newer run — no clock, and no assumption about either
+# side's timekeeping. Exits non-zero when the read fails, so a caller can tell "none yet" (0) from
+# "unknown". The parameters are GET fields rather than query text for the same reason as the
+# listing: a value spliced into the path could change which runs are counted.
+newest_pr_run() {
+  gh api --method GET "repos/${repo}/actions/runs" \
+    -f event=pull_request -f head_sha="$1" -F per_page=100 \
+    --jq '[.workflow_runs[].id] | max // 0' 2> /dev/null
 }
 
-# Block until a check run newer than $2 exists at commit $1. Auto-merge means "merge once the
+# Block until a `pull_request` workflow run newer than $2 exists at commit $1. Auto-merge means "merge once the
 # requirements are met", and immediately after a reopen the newest result at that commit is still
 # the PRE-GATE green: arming there can merge the pull request in the window before Actions has
 # created the run for the reopen, past the very gate this script exists to apply. Returns
@@ -193,7 +180,7 @@ await_fresh_check() {
   case "$baseline" in '' | *[!0-9]*) return 1 ;; esac
   while [ "$waited" -lt "$CHECK_WAIT_SECONDS" ]; do
     # A failed poll is "not yet", never "satisfied" — the loop simply keeps waiting.
-    if now=$(newest_check "$sha") && case "$now" in '' | *[!0-9]*) false ;; *) true ;; esac; then
+    if now=$(newest_pr_run "$sha") && case "$now" in '' | *[!0-9]*) false ;; *) true ;; esac; then
       [ "$now" -gt "$baseline" ] && return 0
     fi
     sleep "$CHECK_POLL_SECONDS"
@@ -311,10 +298,10 @@ while IFS=$'\t' read -r number title; do
     # A failed read leaves the PR untouched rather than assuming 0: a zero baseline is satisfied
     # by any historical run, so the wait would pass instantly and re-arm against the pre-gate
     # green — recreating the merge window this capture exists to close.
-    if ! check_baseline=$(newest_check "$head_sha") \
+    if ! check_baseline=$(newest_pr_run "$head_sha") \
       || case "$check_baseline" in '' | *[!0-9]*) true ;; *) false ;; esac \
       || [ -z "$head_sha" ]; then
-      echo "::error::#$number check baseline could not be read; left untouched (its auto-merge could not be safely restored)"
+      echo "::error::#$number run baseline could not be read; left untouched (its auto-merge could not be safely restored)"
       rm -rf "$state/rearm/$number"
       failed=$((failed + 1))
       continue
@@ -345,11 +332,11 @@ while IFS=$'\t' read -r number title; do
     method=$(cat "$state/rearm/$number/method" 2> /dev/null) || method=""
     headline=$(cat "$state/rearm/$number/headline" 2> /dev/null) || headline=""
     body=$(cat "$state/rearm/$number/body" 2> /dev/null) || body=""
-    # Wait for the reopen's own check run before arming. Until it exists the newest result at
+    # Wait for the reopen's own workflow run before arming. Until it exists the newest result at
     # this commit is the pre-gate green, and `--auto` merges as soon as the requirements read as
     # met — which would take the pull request past the gate this run is applying.
     if ! await_fresh_check "$head_sha" "$check_baseline"; then
-      echo "::error::#$number was re-triggered, but auto-merge was NOT restored: no check run from the reopen appeared within ${CHECK_WAIT_SECONDS}s, and arming it now could merge the PR on the pre-gate result. Re-arm it by hand once its checks are running."
+      echo "::error::#$number was re-triggered, but auto-merge was NOT restored: no pull_request run from the reopen appeared within ${CHECK_WAIT_SECONDS}s, and arming it now could merge the PR on the pre-gate result. Re-arm it by hand once its checks are running."
       rm -rf "$state/rearm/$number"
       failed=$((failed + 1))
       continue

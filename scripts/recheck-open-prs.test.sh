@@ -52,15 +52,12 @@ verb="\$1 \$2"
 # The paginated listing. Asserted on shape as well as content: the query must be passed as GET
 # fields, never spliced into the path, or a branch name containing & or # would select something
 # else entirely.
-if [ "\$1" = "api" ] && case "\$2" in *check-runs) true;; *) false;; esac; then
-  printf '%s\n' "api check-runs \$*" >> "\$log"
+if [ "\$1" = "api" ] && case "\$*" in *actions/runs*) true;; *) false;; esac; then
+  printf '%s\n' "api actions/runs \$*" >> "\$log"
   [ -f "\$db/checkfail" ] && exit 1
-  # The script filters by the required check's name, so an id only counts when the query asks
-  # for that name. A run from some OTHER integration must not satisfy the wait.
-  case "\$*" in
-    *"CI - Required Checks"*) printf '%s\n' "\$(cat "\$db/checkbump" 2>/dev/null || printf '0')" ;;
-    *) printf '%s\n' "\$(cat "\$db/othercheck" 2>/dev/null || printf '0')" ;;
-  esac
+  # A NEW pull_request workflow run id. A rerun of an existing run would not move this, which is
+  # exactly the distinction the script relies on.
+  printf '%s\n' "\$(cat "\$db/checkbump" 2>/dev/null || printf '0')"
   exit 0
 fi
 
@@ -446,7 +443,7 @@ fi
 # safe direction: an auto-merge a human restores is recoverable, a merge that skipped a gate is not.
 d="$WORK/nofreshcheck"
 make_gh "$d" "$TWO_PRS" "" "11"
-# Freeze the high-water mark: reopening no longer produces a new check run.
+# Freeze the high-water mark: reopening no longer produces a new workflow run.
 python3 - "$d/bin/gh" <<'PYEOF'
 import sys,re
 p=sys.argv[1]
@@ -459,9 +456,9 @@ rc=$?
 log=$(cat "$d/calls.log")
 if [ "$rc" -eq 1 ] && [ "$(grep -c 'pr merge 11' "$d/calls.log")" -eq 0 ] \
   && [[ $out == *"could merge the PR on the pre-gate result"* ]]; then
-  ok "auto-merge is not armed when no check run from the reopen appears"
+  ok "auto-merge is not armed when no run from the reopen appears"
 else
-  bad "auto-merge is not armed when no check run from the reopen appears" "exit $rc" "$log" "$out"
+  bad "auto-merge is not armed when no run from the reopen appears" "exit $rc" "$log" "$out"
 fi
 # The pull request itself must still be left open: declining to arm is not a reason to abandon it.
 if [ "$(left_closed "$d")" -eq 0 ]; then
@@ -470,32 +467,32 @@ else
   bad "declining to re-arm still leaves the PR open" "$(left_closed "$d") still closed"
 fi
 
-# --- another integration's check does not satisfy the wait ---------------
-# The wait must observe a new run of the REQUIRED check. Any-check-counts would pass while the
-# required workflow's own run for the reopen still did not exist, and re-arm against the
-# pre-gate green.
-d="$WORK/othercheck"
+# --- a rerun of the existing run does not satisfy the wait ---------------
+# Re-running a workflow keeps its run id and adds an attempt, while creating fresh CHECK runs
+# with new ids under the same name. Comparing check runs would therefore accept a manual rerun of
+# the PRE-GATE run as proof the reopen registered, and re-arm against that stale green. Comparing
+# `pull_request` run ids cannot: only a new event produces a new run id.
+d="$WORK/rerun"
 make_gh "$d" "$TWO_PRS" "" "11"
 python3 - "$d/bin/gh" <<'PYEOF'
 import sys
 p=sys.argv[1]
 s=open(p).read()
-# The required check never gains a run; an unrelated integration's does.
-s=s.replace('printf \'%s\' "$(( $(cat "$db/checkbump" 2>/dev/null || printf \'0\') + 1 ))" > "$db/checkbump"',
-            'printf \'%s\' "$(( $(cat "$db/othercheck" 2>/dev/null || printf \'0\') + 1 ))" > "$db/othercheck"')
+# Reopening no longer produces a new workflow run — as though only a rerun had happened.
+s=s.replace('printf \'%s\' "$(( $(cat "$db/checkbump" 2>/dev/null || printf \'0\') + 1 ))" > "$db/checkbump"', ':')
 open(p,"w").write(s)
 PYEOF
 out=$(run_script "$d")
 rc=$?
 if [ "$rc" -eq 1 ] && [ "$(grep -c 'pr merge 11' "$d/calls.log")" -eq 0 ] \
   && [ "$(left_closed "$d")" -eq 0 ]; then
-  ok "a new check from another integration does not satisfy the wait"
+  ok "a rerun that creates no new pull_request run does not satisfy the wait"
 else
-  bad "a new check from another integration does not satisfy the wait" \
+  bad "a rerun that creates no new pull_request run does not satisfy the wait" \
     "exit $rc" "$(cat "$d/calls.log")" "$out"
 fi
 
-# --- an unreadable check baseline leaves the PR untouched ----------------
+# --- an unreadable run baseline leaves the PR untouched ----------------
 # Treating an unknown baseline as 0 would let any historical run satisfy the wait instantly,
 # re-arming against the pre-gate green — the window the baseline exists to close.
 d="$WORK/baselinefail"
@@ -505,10 +502,10 @@ out=$(run_script "$d")
 rc=$?
 if [ "$rc" -eq 1 ] && [ "$(grep -c 'pr close 11' "$d/calls.log")" -eq 0 ] \
   && [ "$(grep -c 'pr merge 11' "$d/calls.log")" -eq 0 ] \
-  && [[ $out == *"check baseline could not be read"* ]]; then
-  ok "an unreadable check baseline leaves the PR untouched, never assumed zero"
+  && [[ $out == *"run baseline could not be read"* ]]; then
+  ok "an unreadable run baseline leaves the PR untouched, never assumed zero"
 else
-  bad "an unreadable check baseline leaves the PR untouched, never assumed zero" \
+  bad "an unreadable run baseline leaves the PR untouched, never assumed zero" \
     "exit $rc" "$(cat "$d/calls.log")" "$out"
 fi
 
