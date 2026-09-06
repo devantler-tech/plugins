@@ -675,6 +675,8 @@ Fixture surveyor.
 
 - <repo> #<n> "<title>" — maintainer login, draft=<true|false> → OWNERSHIP-UNVERIFIED: branch=<headRefName>, disclosure=<routine|interactive|none>, pentad=<…>
 
+- CANDIDATE-MAINTAINER-COMMENT <repo> #<n> (draft?, merged?) — disclosure=<routine|interactive|none>, "<one-line gist>" → orchestrator applies creation record; instruction only when routine-owned
+
 **Mandatory-query recovery is bounded and resumable.** Process mandatory surfaces in deterministic batches of at most eight candidates. Treat every successful batch as an immutable checkpoint. On failure, partition only the failed batch into two deterministic contiguous halves (the first half gets the extra candidate when the count is odd), execute both halves, and recursively partition each failed half until only failed singleton candidates remain. Never re-run a successful half. Continue unaffected batches and mark only failed singleton candidates `QUERY-UNKNOWN`; never discard completed evidence or collapse it into portfolio-wide `QUERY-UNKNOWN`.
 
 Known candidate-independent failures—exhausted query budget, invalid authentication, or a forge-wide transport failure—must fail the affected mandatory surface closed immediately without splitting. Partition only candidate-specific, shape-specific, or partial failures.
@@ -988,6 +990,18 @@ sed 's/disclosure=<routine|interactive|none>/disclosure=<yes|no>/' \
   && mv "$d/tmp" "$d/plugins/alpha/agents/portfolio-surveyor.agent.md"
 check_fail "portfolio surveyor must emit the three-valued disclosure field in its digest row" \
   "portfolio-surveyor must emit disclosure=<routine|interactive|none> in its digest row" "$d"
+
+# The two rows carry the same token, so a bare-token pin passes while the merged-PR channel
+# silently loses the field. Neutralise the candidate row ALONE, leaving the ownership row intact.
+d=$(fresh); make_desired_state "$d" alpha
+sed 's/^- CANDIDATE-MAINTAINER-COMMENT <repo> #<n> (draft?, merged?) — disclosure=<routine|interactive|none>, /- CANDIDATE-MAINTAINER-COMMENT <repo> #<n> (draft?) — /' \
+  "$d/plugins/alpha/agents/portfolio-surveyor.agent.md" > "$d/tmp" \
+  && mv "$d/tmp" "$d/plugins/alpha/agents/portfolio-surveyor.agent.md"
+grep -q 'OWNERSHIP-UNVERIFIED: branch=<headRefName>, disclosure=<routine|interactive|none>' \
+  "$d/plugins/alpha/agents/portfolio-surveyor.agent.md" \
+  || { echo "  ✗ fixture control: the ownership row must survive so the bare token is still present"; fail=$((fail + 1)); }
+check_fail "portfolio surveyor must carry the disclosure hint on the maintainer-comment row" \
+  "portfolio-surveyor must carry the disclosure hint on the maintainer-comment row" "$d"
 # 22 of 25 measured `Unknown JSON field` failures came from a REST or GraphQL surface, not
 # from another subcommand (#190): `path` learned from the classifier's `actions/runs` payload
 # and spent on `gh run list --json`. The cross-surface clause is its own discriminator.
