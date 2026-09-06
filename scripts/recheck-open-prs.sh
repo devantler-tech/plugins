@@ -80,20 +80,17 @@ command -v gh > /dev/null 2>&1 || {
   echo "recheck-open-prs: gh is required" >&2
   exit 2
 }
-command -v jq > /dev/null 2>&1 || {
-  echo "recheck-open-prs: jq is required" >&2
-  exit 2
-}
 
-# Records a PR from the moment it is closed until it is reopened. The trap is what makes a
-# crash, a cancelled job, or an API failure mid-sequence safe: the window in which a PR is
-# closed is the window in which its number sits in this file.
+# Records a PR from the moment closing it is ATTEMPTED until it is reopened. The trap is what
+# makes a crash, a cancelled job, or an API failure mid-sequence safe. The record is written
+# before the close rather than after it, because a close that succeeds and then fails to be
+# recorded would leave a closed PR the trap knows nothing about; a record whose close never
+# happened costs only a harmless reopen of an already-open PR.
 pending=$(mktemp) || exit 2
-# Invoked indirectly, by the EXIT trap below. Both codes are needed: shellcheck ≥ 0.11 reports
-# the unused-looking function as SC2329 on this line, while older versions — including the one CI
-# installs — report every line of its body as unreachable, SC2317. A directive naming only the
-# local version's code passes here and fails there.
-# shellcheck disable=SC2317,SC2329
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, by the EXIT trap below. Both codes are
+# needed: shellcheck >= 0.11 reports the unused-looking function as SC2329 on its declaration,
+# while older versions — including the one CI installs — report every line of its body as
+# unreachable, SC2317. A directive naming only one version's code passes here and fails there.
 reopen_pending() {
   local n
   while IFS= read -r n; do
@@ -107,17 +104,35 @@ reopen_pending() {
 }
 trap reopen_pending EXIT
 
-if ! prs=$(gh pr list --repo "$repo" --state open --base "$base" --limit 100 \
-  --json number,title,isDraft,autoMergeRequest); then
+# Drop $1 from the pending record. Rewritten wholesale rather than appended to, so the file is
+# always the exact set of PRs currently closed by this run.
+forget_pending() {
+  local keep
+  if ! keep=$(grep -v -x -- "$1" "$pending"); then
+    keep=""
+  fi
+  if [ -z "$keep" ]; then
+    : > "$pending"
+  else
+    printf '%s\n' "$keep" > "$pending"
+  fi
+}
+
+# `gh pr list --limit N` fetches at most N, so any cap silently skips the pull requests past it
+# and leaves them on the pre-gate result — the exact failure this script exists to prevent, just
+# further down the list. `gh api --paginate` walks every page instead, so the sweep is complete
+# however many are open.
+#
+# Auto-merge is deliberately NOT read here. A snapshot taken now could be minutes old by the time
+# a given PR is processed, and re-arming from it would restore an auto-merge someone disabled in
+# between — a merge nobody asked for. It is read per PR, immediately before closing.
+if ! prs=$(gh api --paginate "repos/${repo}/pulls?state=open&base=${base}&per_page=100" \
+  --jq '.[]|[(.number|tostring), (.title // "")]|@tsv'); then
   echo "recheck-open-prs: could not list open pull requests" >&2
   exit 2
 fi
-# An empty listing and a failed one must not read alike: the command's own status is checked
-# above, so an empty array here is a real "nothing open".
-if ! count=$(printf '%s' "$prs" | jq -r 'length'); then
-  echo "recheck-open-prs: open pull request listing is not valid JSON" >&2
-  exit 2
-fi
+
+count=$(printf '%s' "$prs" | awk 'NF { n++ } END { print n + 0 }')
 
 if [ "$count" -eq 0 ]; then
   echo "recheck-open-prs: no open pull requests targeting $base — nothing to re-trigger"
@@ -129,35 +144,50 @@ echo "recheck-open-prs: re-triggering required checks on $count open PR(s) targe
 failed=0
 done_count=0
 
-while IFS=$'\t' read -r number automerge title; do
+while IFS=$'\t' read -r number title; do
   [ -n "$number" ] || continue
+  # A line that is not a PR number means the listing was not what it claimed to be. Failing here
+  # keeps a malformed response from being read as a shorter list of real pull requests.
+  case "$number" in
+    '' | *[!0-9]*)
+      echo "recheck-open-prs: open pull request listing is malformed near '$number'" >&2
+      exit 2
+      ;;
+  esac
 
   if [ "$dry_run" -eq 1 ]; then
-    echo "  would re-trigger #$number (auto-merge=$automerge) — $title"
+    echo "  would re-trigger #$number — $title"
     done_count=$((done_count + 1))
+    continue
+  fi
+
+  # Read auto-merge fresh, immediately before closing, so the decision to restore it is based on
+  # the state that is true now rather than when the sweep started. A read that fails leaves the
+  # PR untouched: closing it without knowing would risk silently dropping an armed auto-merge.
+  if ! automerge=$(gh pr view "$number" --repo "$repo" --json autoMergeRequest \
+    --jq 'if .autoMergeRequest == null then "none" else "armed" end'); then
+    echo "::error::#$number auto-merge state could not be read; left untouched"
+    failed=$((failed + 1))
     continue
   fi
 
   # Close and reopen produce the `reopened` event that resolves a fresh merge ref. The head is
   # untouched, so a green review at the current head stays current.
+  printf '%s\n' "$number" >> "$pending"
   if ! gh pr close "$number" --repo "$repo" > /dev/null; then
+    # Never closed, so nothing to recover.
+    forget_pending "$number"
     echo "::error::#$number could not be closed; skipped without re-triggering"
     failed=$((failed + 1))
     continue
   fi
-  printf '%s\n' "$number" >> "$pending"
 
   if ! gh pr reopen "$number" --repo "$repo" > /dev/null; then
     echo "::error::#$number was closed but could not be reopened"
     failed=$((failed + 1))
     continue
   fi
-  # Reopened: drop it from the crash-recovery list.
-  if ! remaining=$(grep -v -x -- "$number" "$pending"); then
-    remaining=""
-  fi
-  printf '%s' "$remaining" > "$pending"
-  [ -z "$remaining" ] || printf '\n' >> "$pending"
+  forget_pending "$number"
 
   # Closing a PR clears an armed auto-merge request, so restore one that was armed. The
   # repository allows squash only, so the method is not a guess.
@@ -172,7 +202,10 @@ while IFS=$'\t' read -r number automerge title; do
     echo "  re-triggered #$number — $title"
   fi
   done_count=$((done_count + 1))
-done < <(printf '%s' "$prs" | jq -r '.[]|[(.number|tostring), (if .autoMergeRequest == null then "none" else "armed" end), .title]|@tsv')
+  # `printf '%s\n'`, never `printf '%s'`: command substitution strips the trailing newline, so
+  # feeding the value back without one makes `read` return false on the final line and drops the
+  # last pull request from the sweep — silently, and reported as a smaller total.
+done < <(printf '%s\n' "$prs")
 
 echo "recheck-open-prs: $done_count of $count re-triggered"
 if [ "$failed" -gt 0 ]; then
