@@ -89,7 +89,11 @@ command -v jq > /dev/null 2>&1 || {
 # crash, a cancelled job, or an API failure mid-sequence safe: the window in which a PR is
 # closed is the window in which its number sits in this file.
 pending=$(mktemp) || exit 2
-# shellcheck disable=SC2329  # invoked indirectly, by the EXIT trap below
+# Invoked indirectly, by the EXIT trap below. Both codes are needed: shellcheck ≥ 0.11 reports
+# the unused-looking function as SC2329 on this line, while older versions — including the one CI
+# installs — report every line of its body as unreachable, SC2317. A directive naming only the
+# local version's code passes here and fails there.
+# shellcheck disable=SC2317,SC2329
 reopen_pending() {
   local n
   while IFS= read -r n; do
