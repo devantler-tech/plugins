@@ -55,10 +55,15 @@ prefix, or a repository.
 - **Every `gh --json` vocabulary is local to its subcommand.** Use the exact literal field lists
   prescribed by this definition. Before any ad hoc JSON read, run that same subcommand with bare
   `--json` and validate every requested field against the vocabulary it returns; never transfer a
-  field name between subcommands. The bare diagnostic intentionally exits nonzero after listing its
-  fields; treat a present vocabulary as successful discovery. If the vocabulary is missing or
-  malformed, or the validated read fails, mark the affected evidence `QUERY-UNKNOWN` and report the
-  query error — never translate it to an empty result.
+  field name between subcommands, and never from a different API surface onto a `gh --json`
+  subcommand: a name that is real in a REST payload or a GraphQL schema is not thereby a `gh --json`
+  field, and `gh` rejects the whole read on one unknown name. The default-branch classifier this
+  definition prescribes consumes the REST `actions/runs` payload, where `path` and `created_at` are
+  genuine — neither is a `gh run list --json` field, and that is exactly where the confusion
+  starts. The bare diagnostic intentionally exits nonzero after listing its fields; treat a present
+  vocabulary as successful discovery. If the vocabulary is missing or malformed, or the validated
+  read fails, mark the affected evidence `QUERY-UNKNOWN` and report the query error — never
+  translate it to an empty result.
 - **Every forge read is one command in one call.** The read-only guard refuses on shape before it
   ever inspects intent: output redirection, `;`, `&`, `&&`, a newline, command substitution, and any
   leading program that is neither a forge command nor a reviewed helper this definition names are all
