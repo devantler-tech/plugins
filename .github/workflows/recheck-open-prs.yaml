@@ -65,35 +65,50 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 🔑 Generate GitHub App token
+      # Two token steps rather than one with conditional scopes, because the two modes need
+      # different SETS of permissions and not merely different levels of the same ones. A dry run
+      # never reaches the workflow-runs endpoint, so granting it that scope would hand an
+      # advertised read-only mode a permission it cannot use; and the action takes a fixed list,
+      # so a scope cannot be dropped by an expression the way a level can be lowered by one.
+      #
+      # Both mint an App token rather than using GITHUB_TOKEN: events produced with that token do
+      # not start new workflow runs, so a reopen performed with it would be silent — the same
+      # reason update-agent-skills.yaml mints one to open its PR.
+      - name: 🔑 Generate GitHub App token (sweep)
         id: app-token
-        # Events produced with GITHUB_TOKEN do not start new workflow runs, so a reopen performed
-        # with it would be silent — the same reason update-agent-skills.yaml mints an App token to
-        # open its PR.
-        #
+        if: ${{ !inputs.dry-run }}
         # `contents: write` is not spare: restoring an auto-merge request with `gh pr merge --auto`
         # needs it as well as pull-requests write. Without it the close and reopen would succeed
         # and every re-arm would fail, so a PR that arrived with auto-merge armed would be left
         # without it.
         #
-        # A dry run only lists, so it takes read scopes. An advertised read-only mode should not
-        # be holding repository-wide write credentials it cannot use.
+        # `actions: read` is likewise load-bearing. Before restoring an armed auto-merge the script
+        # waits for a `pull_request` run from the reopen, and that read is what makes the wait safe
+        # — without it the baseline request 403s, the pull request is left untouched with its stale
+        # green, and the gate this workflow applies is bypassed on exactly the pull requests that
+        # were about to merge themselves.
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          permission-contents: ${{ inputs.dry-run && 'read' || 'write' }}
-          permission-pull-requests: ${{ inputs.dry-run && 'read' || 'write' }}
-          # Reading workflow runs needs its own scope. Before restoring an armed auto-merge the
-          # script waits for a `pull_request` run from the reopen, and that read is what makes the
-          # wait safe — so without this the baseline request 403s, the pull request is left
-          # untouched with its stale green, and the gate this workflow applies is bypassed on
-          # exactly the pull requests that were about to merge themselves.
+          permission-contents: write
+          permission-pull-requests: write
           permission-actions: read
+
+      - name: 🔑 Generate GitHub App token (dry run)
+        id: app-token-dry
+        if: ${{ inputs.dry-run }}
+        # Listing pull requests is all a dry run does, so those are the only scopes it gets.
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: read
 
       - name: 🔁 Re-trigger open pull requests
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-dry.outputs.token }}
           DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
         run: |
           # shellcheck disable=SC2086  # DRY_RUN is a single optional flag or empty
