@@ -1,6 +1,6 @@
 # Agent Plugins
 
-Ready-to-install bundles that teach your AI coding assistant new skills, connect it to tools, and give it specialist roles. For developers using **VS Code**, **GitHub Copilot CLI**, or **Claude Code**.
+A plugin marketplace: ready-to-install bundles that teach your AI coding assistant new skills, connect it to tools, and give it specialist roles. For developers using **VS Code**, **GitHub Copilot CLI**, or **Claude Code**.
 
 ## Start here
 
@@ -11,7 +11,7 @@ In **Claude Code**, add the marketplace and install the GitHub tools bundle:
 /plugin install github@devantler-plugins
 ```
 
-Using another tool? Follow the [VS Code](docs/installation.md#vs-code), [Copilot CLI](docs/installation.md#copilot-cli), [Claude Desktop](docs/installation.md#claude-code), or [skills-only installation guide](docs/installation.md#any-other-agent--skills-only-via-npx-skills).
+Using another tool? Follow the [VS Code](docs/installation.md#vs-code), [Copilot CLI](docs/installation.md#copilot-cli), [Claude Code](docs/installation.md#claude-code), or [skills-only installation guide](docs/installation.md#any-other-agent--skills-only-via-npx-skills).
 
 ## Choose a bundle
 
