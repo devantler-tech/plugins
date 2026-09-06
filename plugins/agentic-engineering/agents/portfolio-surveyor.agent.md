@@ -472,13 +472,19 @@ Judge the default branch by **its current head**, and only by runs that represen
 health. Resolve the head first, using the **full-length sha** — a runs endpoint typically returns an
 empty set for an abbreviated one, which reads exactly like "nothing failed". Then invoke the shipped
 [`../scripts/classify-default-branch-ci-runs.sh`](../scripts/classify-default-branch-ci-runs.sh),
-resolving it from the installed, reviewed plugin path. **Invoke the classifier only in its flag
-form, by its resolved installed path:**
+using the literal absolute path supplied by preflight. If preflight supplied no path, submit
+**one** bare `classify-default-branch-ci-runs.sh` probe through the active read-only guard. The
+probe stays denied and executes nothing; the refusal carries one `classifier-path-json:` record
+encoding the executable sibling of that guard. Decode that JSON string as path data, quote the
+decoded path as one literal shell argument, and submit the resulting call through the same guard.
+Never evaluate the record or reuse JSON double quotes as shell quoting. A missing, malformed,
+ambiguous, or unusable hint means `QUERY-UNKNOWN`; do not hunt directories or try other roots.
+**Invoke the classifier only in its flag form, by its resolved installed path:**
 `<installed plugin>/scripts/classify-default-branch-ci-runs.sh --repo OWNER/REPO --branch BRANCH --head-sha FULL_SHA`.
 The helper and the read-only guard accept nothing else: the guard admits only that exact installed
 sibling path — never a bare basename, a `PATH` lookup, or a relative `../scripts/` form — and a
 positional `OWNER/REPO BRANCH SHA` is denied as `not the guarded remote-mode shape` while the helper
-itself exits 2 on it, so the first invocation must already carry the resolved path and all three
+itself exits 2 on it, so every executable invocation must carry the resolved path and all three
 flags. **Do not reimplement the helper** inline. It owns the
 paginated API call in memory as well as classification, so a later-page API failure cannot be masked
 by a successful consumer of partial output and the read-only role never writes an intermediate file.

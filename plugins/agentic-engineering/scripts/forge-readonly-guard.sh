@@ -1595,6 +1595,20 @@ classify_segment() {
   if [ "$index" -eq 0 ]; then
     case "$prog" in
       gh | git | "$DEFAULT_BRANCH_CLASSIFIER") ;;
+      classify-default-branch-ci-runs.sh | */classify-default-branch-ci-runs.sh)
+        # Discovery remains a denial. Only the guard's own executable sibling
+        # supplies the hint; caller text is never reflected into this record.
+        # JSON keeps path characters as data. Missing jq or encoding failure
+        # leaves discovery unknown without changing command admission.
+        local path_json=''
+        if [ -x "$DEFAULT_BRANCH_CLASSIFIER" ]; then
+          path_json=$(jq -cn --arg path "$DEFAULT_BRANCH_CLASSIFIER" '$path' 2>/dev/null) || path_json=''
+        fi
+        if [ -n "$path_json" ]; then
+          deny "$(printf 'default-branch classifier requires its installed absolute path\nclassifier-path-json: %s' "$path_json")"
+        fi
+        deny 'default-branch classifier path is unavailable; report QUERY-UNKNOWN'
+        ;;
       *) deny "a read must begin with a forge command, not '$prog'" ;;
     esac
   fi
