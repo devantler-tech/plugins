@@ -18,6 +18,36 @@ separate FinOps role and schedule. See
 Version 4 renames that entrypoint from `automated-ai-engineer` to `agentic-engineer`. See
 [ADR 0006](../../docs/adr/0006-rename-agentic-engineer-entrypoint.md).
 
+Version 5 requires explicit, default-off spend enablement. See
+[ADR 0007](../../docs/adr/0007-explicit-spend-enablement.md).
+
+## Migrating to version 5
+
+The desired-state schema now requires the boolean
+`spec.roles["agentic-engineer"].spendStewardshipEnabled`. Start with `false`; the presence of a
+complete Spend contract does not opt a deployment in. Older documents fail validation, and the
+engineer treats missing or malformed enablement as disabled while continuing ordinary engineering.
+
+1. Refresh the complete desired-state document from the reviewed plugin revision, including its
+   entrypoint digest and scheduler pointers. Keep the shipped flag `false` unless the maintainer
+   explicitly enables spend stewardship.
+2. Declare the path to one full effective desired-state JSON document in the consumer's
+   `AGENTS.md` **Spend contract**. That document supplies the flag for every lane. If the consumer
+   keeps a byte-identical upstream mirror, retain it and declare a separate full effective document
+   through its native configuration; do not edit the mirror or invent a partial-override merge.
+3. Reconcile the native scheduler from the updated pointers and verify preflight reports the
+   effective document, boolean value, and any unresolved Spend contract prerequisites. Keep a
+   disabled deployment disabled during reconciliation.
+
+Without a declared document, preflight uses the shipped `false` default. A declared document that
+cannot be read or validated also disables spend and reports the gap. Resolve the document and flag
+once per run; never search unrelated settings for an enabling value or switch sources mid-run.
+
+Only the maintainer may set the flag to literal `true`. This permits spend analysis and decisions
+only when the Spend contract also resolves; it does not bypass the private decision channel,
+protected-outcomes floor, or authority boundaries. Setting it back to `false` disables the cost
+dimension on the next preflight. There is no additional spend schedule.
+
 ## Migrating to version 4
 
 Version 4 renames the primary engineer's agent entrypoint from `automated-ai-engineer` to
@@ -60,8 +90,8 @@ required before the next scheduled run:
    rather than silently deploying two writers over one concern.
 
 A consumer that keeps its FinOps definition as a separate agent is not broken by this release — but it
-is no longer the shape this plugin describes, and the engineer will not perform spend work until a
-`Spend contract` section resolves.
+is no longer the shape this plugin describes. Current spend enablement follows the explicit flag and
+resolving `Spend contract` described in [*Migrating to version 5*](#migrating-to-version-5).
 
 ## Migrating from `automated-ai-engineer`
 
@@ -82,9 +112,10 @@ complete the plugin-name change manually before the next scheduled run:
 3. Copy the [provider-neutral desired state](resources/provider-neutral.desired-state.json) into the
    consumer workspace and reconcile its native agents and schedules. Preserve the consumer's
    canonical `AGENTS.md`; do not copy its organization-specific facts into this plugin.
-4. Before re-enabling unattended writes, verify that the installed plugin reports version `4.0.0` or
-   later — the current major, so **[*Migrating to version 3*](#migrating-to-version-3) and
-   [*Migrating to version 4*](#migrating-to-version-4) must both be complete too**; a stop at `2.0.0`
+4. Before re-enabling unattended writes, verify that the installed plugin reports version `5.0.0` or
+   later, so **[*Migrating to version 3*](#migrating-to-version-3),
+   [*Migrating to version 4*](#migrating-to-version-4), and
+   [*Migrating to version 5*](#migrating-to-version-5) must all be complete too**; a stop at `2.0.0`
    would resume writes with the retired FinOps schedule still armed, and a stop at `3.0.0` with a
    schedule pointing at an entrypoint that no longer resolves — and that it
    exposes `agentic-engineer`, `portfolio-surveyor`, and `agent-improver`, and that every
@@ -99,8 +130,8 @@ the read-only preflight loads the new namespace successfully.
 Three agents:
 
 - **`agentic-engineer`** — the actor that runs the survey → select → act → report loop, operates
-  the portfolio, advances the oldest actionable issue, and — when the consumer declares a **Spend
-  contract** — stewards the portfolio's running cost in the same loop.
+  the portfolio, advances the oldest actionable issue, and — after explicit maintainer opt-in and a
+  resolving **Spend contract** — stewards the portfolio's running cost in the same loop.
 - **`portfolio-surveyor`** — a delegated, read-only agent that returns a compact current-state digest.
 - **`agent-improver`** — a meta-engineer that evaluates deployed instances and improves their shared
   definition from evidence.
@@ -175,10 +206,12 @@ Enabling `agent-improver` adds two required sections:
 - **Authority model** — the separate boundaries for tightening and loosening prose and enforcement
   guardrails.
 
-Enabling the engineer's spend stewardship additionally requires **Spend contract**, which names the
+Enabling the engineer's spend stewardship requires literal `true` in
+`spec.roles["agentic-engineer"].spendStewardshipEnabled` and **Spend contract**, which names the
+single effective desired-state document,
 cost evidence sources and which are actually wired, the protected-outcomes floor and who may change
 it, the run procedure for a cost pass, the private channel a financial decision goes to, and the
-cadence a cost pass runs on. Absent, the engineer runs normally with the **cost dimension failed
+cadence a cost pass runs on. Disabled or unresolved, the engineer runs normally with the **cost dimension failed
 closed** — it does no spend analysis rather than guessing a floor, a price, or a channel.
 
 The `Memory` section must also name the scorecard and open verification-hypothesis store used by the

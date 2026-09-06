@@ -626,6 +626,8 @@ If neither a callback nor a safe watcher is available, persist the pending targe
 
 ## Spend stewardship
 
+**Spend stewardship is explicitly opt-in.** During preflight, read `spec.roles["agentic-engineer"].spendStewardshipEnabled` from the single effective desired-state document declared in the consumer **Spend contract**. If no effective document is declared, use the shipped `false` default. An unreadable or invalid declared document, a missing field, or a non-boolean value disables spend and reports the gap. Only literal `true` plus a resolving **Spend contract** enables spend analysis and decisions; it bypasses no private-channel, protected-outcomes, or authority requirement. Only the maintainer may opt in. Never infer enablement from contract presence or past activity, and never change the source or value during a run. While disabled, continue ordinary operate and advance engineering.
+
 - **You never move money.**
 - Private financial data never reaches a public artifact.
 EOF
@@ -749,6 +751,7 @@ EOF
     "roles": {
       "agentic-engineer": {
         "enabled": true,
+        "spendStewardshipEnabled": false,
         "mode": "scheduled-and-on-demand"
       },
       "portfolio-surveyor": {
@@ -773,7 +776,7 @@ EOF
         "schedules": {
           "agentic-engineer": {
             "definitionFrom": "plugin:$name/agentic-engineer",
-            "bootstrapPrompt": "Load native memory and AGENTS.md, then invoke the installed agentic-engineer entrypoint."
+            "bootstrapPrompt": "Load native memory and AGENTS.md, honor spec.roles[\"agentic-engineer\"].spendStewardshipEnabled from the effective desired state, then invoke the installed agentic-engineer entrypoint."
           },
           "agent-improver": {
             "definitionFrom": "plugin:$name/agent-improver",
@@ -806,6 +809,7 @@ EOF
       "steps": [
         "Resolve the canonical consumer repository.",
         "Load the plugin and validate the consumer contract.",
+        "Preserve spec.roles[\"agentic-engineer\"].spendStewardshipEnabled from the effective desired state; never infer opt-in.",
         "Create a native schedule only for entries in runtime.scheduler.schedules whose corresponding roles are enabled by the consumer contract.",
         "Apply the runtime wiring without duplicating the role."
       ],
@@ -1287,6 +1291,57 @@ check_fail "desired-state resource missing Agent Improver schedule prompt fails"
 
 # Spend stewardship is merged into the entrypoint, so a resurrected standalone FinOps role — the
 # exact drift this merge removes — must fail rather than quietly reintroduce a second writer.
+if jq -e '.spec.roles["agentic-engineer"].spendStewardshipEnabled == false' \
+  "$REPO_ROOT/plugins/agentic-engineering/resources/provider-neutral.desired-state.json" >/dev/null; then
+  echo "  ✓ shipped spend stewardship defaults off"; pass=$((pass + 1))
+else
+  echo "  ✗ shipped spend stewardship must default off"; fail=$((fail + 1))
+fi
+
+for enabled in false true; do
+  d=$(fresh); make_desired_state "$d" alpha
+  jq --argjson enabled "$enabled" '.spec.roles["agentic-engineer"].spendStewardshipEnabled = $enabled' \
+    "$d/plugins/alpha/resources/provider-neutral.desired-state.json" > "$d/tmp" \
+    && mv "$d/tmp" "$d/plugins/alpha/resources/provider-neutral.desired-state.json"
+  check_pass "spend enablement accepts boolean $enabled" "$d"
+done
+
+for enabled in null '"true"' 1 '{}' '[]'; do
+  d=$(fresh); make_desired_state "$d" alpha
+  jq --argjson enabled "$enabled" '.spec.roles["agentic-engineer"].spendStewardshipEnabled = $enabled' \
+    "$d/plugins/alpha/resources/provider-neutral.desired-state.json" > "$d/tmp" \
+    && mv "$d/tmp" "$d/plugins/alpha/resources/provider-neutral.desired-state.json"
+  check_fail "spend enablement rejects $enabled" "spendStewardshipEnabled must be a boolean" "$d"
+done
+
+d=$(fresh); make_desired_state "$d" alpha
+jq 'del(.spec.roles["agentic-engineer"].spendStewardshipEnabled)' \
+  "$d/plugins/alpha/resources/provider-neutral.desired-state.json" > "$d/tmp" \
+  && mv "$d/tmp" "$d/plugins/alpha/resources/provider-neutral.desired-state.json"
+check_fail "spend enablement is required" "spendStewardshipEnabled must be a boolean" "$d"
+
+for surface in onboarding schedule; do
+  d=$(fresh); make_desired_state "$d" alpha
+  if [ "$surface" = onboarding ]; then
+    expression='.spec.onboarding.steps |= map(select(contains("spendStewardshipEnabled") | not))'
+  else
+    expression='.spec.runtime.scheduler.schedules["agentic-engineer"].bootstrapPrompt = "Load native memory and AGENTS.md, then invoke the installed agentic-engineer entrypoint."'
+  fi
+  jq "$expression" "$d/plugins/alpha/resources/provider-neutral.desired-state.json" > "$d/tmp" \
+    && mv "$d/tmp" "$d/plugins/alpha/resources/provider-neutral.desired-state.json"
+  check_fail "$surface must consume spend enablement" "onboarding and engineer schedule must consume spendStewardshipEnabled" "$d"
+done
+
+d=$(fresh); make_desired_state "$d" alpha
+# Match literal Markdown backticks, never shell expansions.
+# shellcheck disable=SC2016
+sed 's/Only literal `true` plus a resolving/Any flag value plus a resolving/' \
+  "$d/plugins/alpha/agents/agentic-engineer.agent.md" > "$d/tmp" \
+  && mv "$d/tmp" "$d/plugins/alpha/agents/agentic-engineer.agent.md"
+sync_entrypoint_digest "$d" alpha
+check_fail "spend enablement cannot bypass explicit opt-in even with a refreshed digest" \
+  "agentic-engineer must enforce the explicit spend enablement contract" "$d"
+
 d=$(fresh); make_desired_state "$d" alpha
 jq '.spec.roles["finops-engineer"] = {"enabledWhen": "x", "definitionFrom": "y", "mode": "z"}' \
   "$d/plugins/alpha/resources/provider-neutral.desired-state.json" > "$d/tmp" \
