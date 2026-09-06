@@ -13,4 +13,3 @@ A **skill** teaches an assistant a task. An **agent** gives it a specialized rol
 | [`engineering-practices`](../plugins/engineering-practices/) | `conventional-release`, `git-commit`, `refactor`, `test-driven-development`, `ways-of-working` | Git commits, conventional releases, refactoring, TDD, and engineering ways of working |
 | [`frontend-design`](../plugins/frontend-design/) | `astro`, `frontend-design`, `web-design-guidelines` | Astro, frontend design, and web design guidelines |
 | [`vibe-coding`](../plugins/vibe-coding/) | `needs-stack-mapping`, `allowed-stack-guardrail`, `jargon-free-voice` (skills) · `vibe-coding-companion` (agent) | Build a product by conversation alone — plain-language companion agent + guardrailed needs-to-stack skills for people with no technical background |
-
