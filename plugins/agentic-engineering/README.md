@@ -219,6 +219,9 @@ improvement loop. The role/configuration boundary remains the one established by
 [ADR 0002](../../docs/adr/0002-automated-ai-engineer-plugin-boundary.md): portable decision logic lives
 in this plugin; consumer-owned facts live in `AGENTS.md`.
 
+The [surveyor coverage guide](../../docs/surveyor-contract-coverage.md) identifies the generic
+structural guards, the checks that stay in the consumer, and separate model-behavior scenarios.
+
 ## Delivery ownership
 
 Every write-capable role owns selected engineering work from claim through exact-head review and
