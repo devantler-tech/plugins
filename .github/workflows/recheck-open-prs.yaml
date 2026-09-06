@@ -84,6 +84,12 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           permission-contents: ${{ inputs.dry-run && 'read' || 'write' }}
           permission-pull-requests: ${{ inputs.dry-run && 'read' || 'write' }}
+          # Reading workflow runs needs its own scope. Before restoring an armed auto-merge the
+          # script waits for a `pull_request` run from the reopen, and that read is what makes the
+          # wait safe — so without this the baseline request 403s, the pull request is left
+          # untouched with its stale green, and the gate this workflow applies is bypassed on
+          # exactly the pull requests that were about to merge themselves.
+          permission-actions: read
 
       - name: 🔁 Re-trigger open pull requests
         env:
