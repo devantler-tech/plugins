@@ -671,6 +671,12 @@ Fixture surveyor.
 
 **Every `gh --json` vocabulary is local to its subcommand.** Use the exact literal field lists prescribed by this definition. Before any ad hoc JSON read, run that same subcommand with bare `--json` and validate every requested field against the vocabulary it returns; never transfer a field name between subcommands, and never from a different API surface onto a `gh --json` subcommand: a name that is real in a REST payload or a GraphQL schema is not thereby a `gh --json` field, and `gh` rejects the whole read on one unknown name. The default-branch classifier this definition prescribes consumes the REST `actions/runs` payload, where `path` and `created_at` are genuine — neither is a `gh run list --json` field, and that is exactly where the confusion starts. The bare diagnostic intentionally exits nonzero after listing its fields; treat a present vocabulary as successful discovery. If the vocabulary is missing or malformed, or the validated read fails, mark the affected evidence `QUERY-UNKNOWN` and report the query error — never translate it to an empty result.
 
+**`disclosure` is three-valued and matched by WHICH literal appears, never by where it sits.** Emit exactly one of `routine`, `interactive`, or `none`: `routine` when the body carries the deployment's AI-disclosure prefix (match the **structural** prefix the consumer contract defines, never a specific actor word — roles get renamed, and a matcher keyed to one spelling silently reclassifies everything written under the others); `interactive` when it carries the deployment's declared interactive-session marker (declared beside the AI-disclosure prefix in **Maintainer channels**; a contract that declares no such marker cannot yield `interactive`, so report that gap and emit `none` — never guess a literal); and `none` when it carries neither, which is genuinely unknown — never a synonym for the maintainer's and never a synonym for the orchestrator's own. Match both literals as a **structural line anywhere in the body**: a line whose content, after leading whitespace and any blockquote `>` or list `-`/`*` markers, begins with the marker (an optional 🤖 may precede it). Never a bare substring, and never anchored to the body start — an interactive marker can be the last line and a routine disclosure can sit under a template heading, so a leads-with test reports `none` for both and cannot tell them apart. A marker line counts wherever it appears, **including inside a fenced code block — there is deliberately no fence suppression.** A fence detector is unbounded to specify (an unclosed fence, a nested fence, a blockquoted close token, an indented code block, a backtick inside an info string, a raw HTML block), and every container spelling it must skip is another way for it to swallow a real marker; measured across 1029 PR bodies in a consuming deployment (2026-08-11), a delimiter-aware fence state machine changed zero verdicts. The accepted cost is the cheap direction — a body that fences an example of the interactive literal classifies `interactive`, which costs a steer the maintainer can repeat — while a real marker swallowed by a mis-parsed fence would read the maintainer's own commentary as an instruction. When both literals appear, **`interactive` wins**. The two values carry asymmetric weight: `interactive` is decisive on its own, while `routine` only corroborates the orchestrator's creation record, because the routine prefix also appears on maintainer-interactive PRs. The field tells the orchestrator whose control channel a maintainer-login comment on that PR is; it never decides whether the PR may be driven.
+
+- <repo> #<n> "<title>" — maintainer login, draft=<true|false> → OWNERSHIP-UNVERIFIED: branch=<headRefName>, disclosure=<routine|interactive|none>, pentad=<…>
+
+- CANDIDATE-MAINTAINER-COMMENT <repo> #<n> (draft?, merged?) — disclosure=<routine|interactive|none>, "<one-line gist>" → orchestrator applies creation record; instruction only when routine-owned
+
 **Mandatory-query recovery is bounded and resumable.** Process mandatory surfaces in deterministic batches of at most eight candidates. Treat every successful batch as an immutable checkpoint. On failure, partition only the failed batch into two deterministic contiguous halves (the first half gets the extra candidate when the count is odd), execute both halves, and recursively partition each failed half until only failed singleton candidates remain. Never re-run a successful half. Continue unaffected batches and mark only failed singleton candidates `QUERY-UNKNOWN`; never discard completed evidence or collapse it into portfolio-wide `QUERY-UNKNOWN`.
 
 Known candidate-independent failures—exhausted query budget, invalid authentication, or a forge-wide transport failure—must fail the affected mandatory surface closed immediately without splitting. Partition only candidate-specific, shape-specific, or partial failures.
@@ -959,6 +965,43 @@ sed 's/never transfer a field name between subcommands/field names may be reused
 check_fail "portfolio surveyor must forbid cross-subcommand JSON field reuse" \
   "portfolio-surveyor must validate ad hoc gh JSON fields against the same subcommand" "$d"
 
+# --- disclosure hint: three-valued, matched anywhere in the body (#117, #118) ---
+# A two-valued leads-with test conflated a maintainer-interactive PR with a missing marker and
+# drove `gh pr update-branch` onto the maintainer's own PRs. Each sentence below is a
+# discriminator the orchestrator acts on, so each is pinned by neutralising it alone.
+d=$(fresh); make_desired_state "$d" alpha
+sed 's/structural line anywhere in the body/structural line at the start of the body/' \
+  "$d/plugins/alpha/agents/portfolio-surveyor.agent.md" > "$d/tmp" \
+  && mv "$d/tmp" "$d/plugins/alpha/agents/portfolio-surveyor.agent.md"
+check_fail "portfolio surveyor must match the disclosure literals anywhere in the body, never anchored to its start" \
+  "portfolio-surveyor must report a three-valued disclosure matched as a structural line anywhere in the body" "$d"
+
+d=$(fresh); make_desired_state "$d" alpha
+# shellcheck disable=SC2016  # the backticks are literal characters in the pattern
+sed 's/When both literals appear, \*\*`interactive` wins\*\*/When both literals appear, **`routine` wins**/' \
+  "$d/plugins/alpha/agents/portfolio-surveyor.agent.md" > "$d/tmp" \
+  && mv "$d/tmp" "$d/plugins/alpha/agents/portfolio-surveyor.agent.md"
+check_fail "portfolio surveyor must let the interactive marker win when both literals appear" \
+  "portfolio-surveyor must report a three-valued disclosure matched as a structural line anywhere in the body" "$d"
+
+d=$(fresh); make_desired_state "$d" alpha
+sed 's/disclosure=<routine|interactive|none>/disclosure=<yes|no>/' \
+  "$d/plugins/alpha/agents/portfolio-surveyor.agent.md" > "$d/tmp" \
+  && mv "$d/tmp" "$d/plugins/alpha/agents/portfolio-surveyor.agent.md"
+check_fail "portfolio surveyor must emit the three-valued disclosure field in its digest row" \
+  "portfolio-surveyor must emit disclosure=<routine|interactive|none> in its digest row" "$d"
+
+# The two rows carry the same token, so a bare-token pin passes while the merged-PR channel
+# silently loses the field. Neutralise the candidate row ALONE, leaving the ownership row intact.
+d=$(fresh); make_desired_state "$d" alpha
+sed 's/^- CANDIDATE-MAINTAINER-COMMENT <repo> #<n> (draft?, merged?) — disclosure=<routine|interactive|none>, /- CANDIDATE-MAINTAINER-COMMENT <repo> #<n> (draft?) — /' \
+  "$d/plugins/alpha/agents/portfolio-surveyor.agent.md" > "$d/tmp" \
+  && mv "$d/tmp" "$d/plugins/alpha/agents/portfolio-surveyor.agent.md"
+grep -q 'OWNERSHIP-UNVERIFIED: branch=<headRefName>, disclosure=<routine|interactive|none>' \
+  "$d/plugins/alpha/agents/portfolio-surveyor.agent.md" \
+  || { echo "  ✗ fixture control: the ownership row must survive so the bare token is still present"; fail=$((fail + 1)); }
+check_fail "portfolio surveyor must carry the disclosure hint on the maintainer-comment row" \
+  "portfolio-surveyor must carry the disclosure hint on the maintainer-comment row" "$d"
 # 22 of 25 measured `Unknown JSON field` failures came from a REST or GraphQL surface, not
 # from another subcommand (#190): `path` learned from the classifier's `actions/runs` payload
 # and spent on `gh run list --json`. The cross-surface clause is its own discriminator.

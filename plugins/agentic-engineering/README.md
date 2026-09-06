@@ -159,7 +159,9 @@ skills fail closed when any are absent:
 - **Trust gate** — trusted identities, reviewer-only identities, and repository merge mechanics.
 - **Cadence** — run frequency, run budget, and rotation intervals.
 - **Memory** — durable-store location, schema, and cross-run cursors.
-- **Maintainer channels** — active decision channels and the canonical AI-disclosure line.
+- **Maintainer channels** — active decision channels, the canonical AI-disclosure line, and the
+  maintainer's interactive-session marker (the literal a PR body carries when it came from the
+  maintainer's own hand-driven session, so the surveyor can tell that PR from the engineer's own).
 
 The surveyor also reads **Writer namespaces** for cross-instance claim discovery. Deployments with
 expiring claims must declare their lease duration and authoritative start/renewal timestamp source
