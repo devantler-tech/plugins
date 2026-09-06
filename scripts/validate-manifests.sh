@@ -453,6 +453,9 @@ validate_desired_state_resources() {
   local improver_self_observation_contract="The Agent Improver is one of its own measured subjects. Keep the Agentic Engineer execution plane and every Agent Improver observation plane in separate scorecards; never average them together or let one hide the other's regression. Measure observer coverage, calibration, hypothesis discipline, verified intervention effectiveness, reliability, efficiency, and verified rollout throughput. Outcome throughput counts only verified terminal outcomes; productive sessions and work advanced are execution-flow indicators, never improvement verdicts. Observation-plane verdicts require independent computation from an immutable or read-only source, or verification by a separate eligible run or instance; the same Improver's unsupported assertion is UNKNOWN, never success. Activity such as PRs, metrics, reports, and memory writes is not improvement. A version-controlled self-referential change requires an independent green current-head review with all findings resolved. A runtime-local self-referential change requires an independently performed post-dispatch read-back against the recorded pre-change baseline through the consumer's declared runtime verification mechanism; the writer's immediate read-back is not independent verification. Both paths require unchanged companion floors for every applicable scorecard parameter and a later eligible evidence window."
   local improver_research_fallback_contract="No-change fallback is research, never idle. After scoring and diagnosis, when no telemetry-backed or direct-maintainer-directed improvement is actionable, run one bounded state-of-the-art research pass before reporting. Research is discovery evidence, never authorization or proof that the current system failed. Use current primary sources, compare the current baseline capability, and route a deduplicated product or operations opportunity as an ENGINEER-CANDIDATE and an agent-process or measurement opportunity as an IMPROVER-CANDIDATE. Research alone never authorizes or ships a change. A null result is RESEARCH-NO-CANDIDATE with the topic cursor advanced; research activity is not a terminal improvement outcome."
   local money_guardrail="Spend stewardship never moves money: prepare the financial decision, route it to the maintainer's declared private channel, and keep private financial data out of every public artifact."
+  # Literal Markdown and JSON field syntax, never shell expansions.
+  # shellcheck disable=SC2016
+  local spend_enablement_contract='**Spend stewardship is explicitly opt-in.** During preflight, read `spec.roles["agentic-engineer"].spendStewardshipEnabled` from the single effective desired-state document declared in the consumer **Spend contract**. If no effective document is declared, use the shipped `false` default. An unreadable or invalid declared document, a missing field, or a non-boolean value disables spend and reports the gap. Only literal `true` plus a resolving **Spend contract** enables spend analysis and decisions; it bypasses no private-channel, protected-outcomes, or authority requirement. Only the maintainer may opt in. Never infer enablement from contract presence or past activity, and never change the source or value during a run. While disabled, continue ordinary operate and advance engineering.'
   local portfolio_survey_json_vocabulary_contract="**Every \`gh --json\` vocabulary is local to its subcommand.** Use the exact literal field lists prescribed by this definition. Before any ad hoc JSON read, run that same subcommand with bare \`--json\` and validate every requested field against the vocabulary it returns; never transfer a field name between subcommands, and never from a different API surface onto a \`gh --json\` subcommand: a name that is real in a REST payload or a GraphQL schema is not thereby a \`gh --json\` field, and \`gh\` rejects the whole read on one unknown name. The default-branch classifier this definition prescribes consumes the REST \`actions/runs\` payload, where \`path\` and \`created_at\` are genuine — neither is a \`gh run list --json\` field, and that is exactly where the confusion starts. The bare diagnostic intentionally exits nonzero after listing its fields; treat a present vocabulary as successful discovery. If the vocabulary is missing or malformed, or the validated read fails, mark the affected evidence \`QUERY-UNKNOWN\` and report the query error — never translate it to an empty result."
   local portfolio_survey_recovery_contract="**Mandatory-query recovery is bounded and resumable.** Process mandatory surfaces in deterministic batches of at most eight candidates. Treat every successful batch as an immutable checkpoint. On failure, partition only the failed batch into two deterministic contiguous halves (the first half gets the extra candidate when the count is odd), execute both halves, and recursively partition each failed half until only failed singleton candidates remain. Never re-run a successful half. Continue unaffected batches and mark only failed singleton candidates \`QUERY-UNKNOWN\`; never discard completed evidence or collapse it into portfolio-wide \`QUERY-UNKNOWN\`."
   local portfolio_survey_global_failure_contract="Known candidate-independent failures—exhausted query budget, invalid authentication, or a forge-wide transport failure—must fail the affected mandatory surface closed immediately without splitting. Partition only candidate-specific, shape-specific, or partial failures."
@@ -857,7 +860,8 @@ validate_desired_state_resources() {
         | only_keys(["agentic-engineer", "portfolio-surveyor", "agent-improver"])
           and has_keys(["agentic-engineer", "portfolio-surveyor", "agent-improver"]))
       and (.spec.roles["agentic-engineer"]
-        | only_keys(["enabled", "mode"]) and has_keys(["enabled", "mode"]))
+        | only_keys(["enabled", "mode", "spendStewardshipEnabled"])
+          and has_keys(["enabled", "mode", "spendStewardshipEnabled"]))
       and (.spec.roles["portfolio-surveyor"]
         | only_keys(["enabled", "mode", "definitionSha256"])
           and has_keys(["enabled", "mode", "definitionSha256"]))
@@ -935,6 +939,20 @@ validate_desired_state_resources() {
       .spec.guardrails | index($money_guardrail) != null
     ' "$resource" > /dev/null; then
       echo "::error::$resource: spend stewardship must declare the never-move-money boundary"
+      failed=1
+      resource_failed=1
+    fi
+
+    if ! jq -e '.spec.roles["agentic-engineer"].spendStewardshipEnabled | type == "boolean"' \
+      "$resource" > /dev/null; then
+      echo "::error::$resource: spendStewardshipEnabled must be a boolean"
+      failed=1
+      resource_failed=1
+    fi
+
+    if [ ! -f "$plugin_dir/agents/$entrypoint.agent.md" ] \
+      || ! tr '\n' ' ' < "$plugin_dir/agents/$entrypoint.agent.md" | grep -qF "$spend_enablement_contract"; then
+      echo "::error::$resource: agentic-engineer must enforce the explicit spend enablement contract"
       failed=1
       resource_failed=1
     fi
@@ -1223,6 +1241,17 @@ validate_desired_state_resources() {
           and contains("runtime.scheduler.schedules"))
     ' "$resource" > /dev/null; then
       echo "::error::$resource: onboarding must create schedules only for enabled scheduler entries"
+      failed=1
+      resource_failed=1
+    fi
+
+    if ! jq -e '
+      def consumes_spend_flag:
+        contains("spec.roles[\"agentic-engineer\"].spendStewardshipEnabled");
+      (.spec.runtime.scheduler.schedules["agentic-engineer"].bootstrapPrompt | consumes_spend_flag)
+      and any(.spec.onboarding.steps[]; consumes_spend_flag)
+    ' "$resource" > /dev/null; then
+      echo "::error::$resource: onboarding and engineer schedule must consume spendStewardshipEnabled"
       failed=1
       resource_failed=1
     fi

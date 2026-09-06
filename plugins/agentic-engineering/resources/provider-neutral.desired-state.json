@@ -27,7 +27,7 @@
           "executable": true
         }
       ],
-      "entrypointSha256": "9d45e8ae019f75944d70c78f8c82481d2b9af798792c4c008cfe61fa494b8441",
+      "entrypointSha256": "a3d01aa54b2af445aa4a6d07eb406d401824be7db08d5ec4c2f914db7fc9bf39",
       "updatePolicy": "latest-reviewed-default-branch",
       "providerPolicy": "neutral",
       "refreshTiming": "before-starting-each-run",
@@ -55,6 +55,7 @@
     "roles": {
       "agentic-engineer": {
         "enabled": true,
+        "spendStewardshipEnabled": false,
         "mode": "scheduled-and-on-demand"
       },
       "portfolio-surveyor": {
@@ -79,7 +80,7 @@
         "schedules": {
           "agentic-engineer": {
             "definitionFrom": "plugin:agentic-engineering/agentic-engineer",
-            "bootstrapPrompt": "Load native persistent memory, read the consumer's canonical AGENTS.md, load the latest reviewed agentic-engineering plugin, and invoke its agentic-engineer entrypoint. Follow the consumer contract and fail closed on missing deployment facts, including spend stewardship when the Spend contract section does not resolve. Do not duplicate the role in this scheduler prompt."
+            "bootstrapPrompt": "Load native persistent memory, read the consumer's canonical AGENTS.md, load the latest reviewed agentic-engineering plugin, and invoke its agentic-engineer entrypoint. Resolve spec.roles[\"agentic-engineer\"].spendStewardshipEnabled during preflight using the entrypoint's explicit opt-in contract. Follow the consumer contract and fail closed on missing deployment facts. Do not duplicate the role in this scheduler prompt."
           },
           "agent-improver": {
             "definitionFrom": "plugin:agentic-engineering/agent-improver",
@@ -112,7 +113,7 @@
       "steps": [
         "Resolve the canonical consumer repository from the current workspace.",
         "Install or refresh agentic-engineering from the declared marketplace using the runtime's native mechanism. If full plugins are unsupported, load the canonical agent and skill files plus the referenced runtime assets from the declared source without creating divergent copies, including scripts/classify-default-branch-ci-runs.sh and scripts/forge-readonly-guard.sh for the portfolio-surveyor, plus scripts/surveyor-forge-readonly.sh only where the runtime presents a candidate command as structured JSON on standard input rather than as an argument, and verify every declared SHA-256 and executable requirement before use. forge-readonly-guard.sh --command is the portable contract; the wrapper is an input adapter for it, never a second policy. Register the guard at the surveyor's own pre-execution point only, directly or through that adapter, using the runtime's own agent-scoped mechanism; plugin-shipped agent definitions cannot carry that registration themselves, so it is always consumer-side wiring. A deployment that has not installed those assets or has not registered the guard for that agent fails closed (forge reads are QUERY-UNKNOWN).",
-        "Read AGENTS.md and verify every required consumer contract section. Enable agent-improver only when both additional sections are present, and enable the agentic-engineer's spend stewardship only when the Spend contract section resolves its cost evidence sources, protected-outcomes floor, run procedure, and private decision channel; otherwise run the engineer with the cost dimension failed closed.",
+        "Read AGENTS.md and verify every required consumer contract section. Enable agent-improver only when both additional sections are present. Preserve spec.roles[\"agentic-engineer\"].spendStewardshipEnabled from the single effective desired-state document declared in Spend contract, or the shipped false default when none is declared. Apply the engineer entrypoint's explicit opt-in contract before spend work; onboarding never infers or grants maintainer opt-in. Report the effective source, flag value, and unresolved prerequisites while continuing ordinary operate and advance engineering.",
         "Map the declared roles onto native agent capabilities, preserve portfolio-surveyor as read-only, and grant least privilege for each role. Export a disabling GH_TELEMETRY (0 or false) in the environment the surveyor's shell inherits: the read-only forge guard treats a missing value as unproven and refuses every command, including reads, so a runtime that enforces the guard without this variable leaves the surveyor unable to run any forge query at all. It cannot be supplied inside the command string, which the guard also refuses.",
         "Allocate a unique branch namespace for every deployed writer instance and record it in the consumer contract before enabling writes.",
         "Create or update a native schedule only for each entry in runtime.scheduler.schedules whose corresponding role's enabled or enabledWhen condition is satisfied, using AGENTS.md#Cadence and that entry's thin bootstrap prompt.",

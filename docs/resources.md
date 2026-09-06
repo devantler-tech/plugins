@@ -12,16 +12,18 @@ trust, cadence, memory, and maintainer-channel configuration. It also requires t
 unsupported native capabilities instead of silently weakening the deployment. The manifest carries
 separate thin schedule prompts for the Agentic Engineer and the Agent Improver; each resolves its
 cadence and deployment facts from the canonical consumer instructions. Spend stewardship has no
-schedule of its own — it runs inside the engineer's loop when the consumer declares a `Spend contract`
-section.
-Existing installations must complete **all three** migrations, in order, before their next scheduled
+schedule of its own. It runs inside the engineer's loop only after explicit maintainer opt-in through
+`spec.roles["agentic-engineer"].spendStewardshipEnabled` and a resolving `Spend contract`.
+Existing installations must complete **all four** migrations, in order, before their next scheduled
 run — the
 [version 2 checklist](../plugins/agentic-engineering/README.md#migrating-from-automated-ai-engineer)
 (plugin identity), **then** the
 [version 3 checklist](../plugins/agentic-engineering/README.md#migrating-to-version-3) (retire the
 `finops-engineer` schedule and adopt the `Spend contract` section), **then** the
 [version 4 checklist](../plugins/agentic-engineering/README.md#migrating-to-version-4)
-(the `automated-ai-engineer` → `agentic-engineer` entrypoint rename). Stopping early would resume
+(the `automated-ai-engineer` → `agentic-engineer` entrypoint rename), **then** the
+[version 5 checklist](../plugins/agentic-engineering/README.md#migrating-to-version-5)
+(explicit default-off spend enablement). Stopping early would resume
 unattended writes with the retired FinOps schedule still armed, or with a schedule pointing at an
 entrypoint that no longer resolves.
 
@@ -102,5 +104,6 @@ improves the engineer itself from measured evidence) — alongside its engineeri
 [ADR 0005](../docs/adr/0005-merge-spend-stewardship-into-the-engineer.md)). Same delivery rules; the
 consuming deployment must define the five contract sections (Portfolio map, Trust gate, Cadence,
 Memory, Maintainer channels) in its `AGENTS.md` — plus **Agent definition locations** and
-**Authority model** if it enables `agent-improver`, and **Spend contract** if it wants the engineer to
-steward spend (see the [plugin README](../plugins/agentic-engineering/README.md)).
+**Authority model** if it enables `agent-improver`, and **Spend contract** plus explicit maintainer
+opt-in if it wants the engineer to steward spend (see the
+[plugin README](../plugins/agentic-engineering/README.md)).
