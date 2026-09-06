@@ -1579,6 +1579,9 @@ classify_consumer_classifier() {
   return 0
 }
 
+# Classify one parsed pipeline segment. $1 is its command text and $2 its
+# zero-based position. Return only for an admitted read; deny exits the guard.
+# A classifier discovery hint supplies path data while keeping the probe denied.
 classify_segment() {
   local seg=$1
   local index=$2
