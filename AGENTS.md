@@ -38,7 +38,7 @@ plugins/
     │   └── <skill>/SKILL.md    # An installed skill copied from upstream, with metadata.github-* provenance
     └── resources/              # Optional ancillary, explicitly linked human-consumed assets
 scripts/
-├── validate-manifests.sh       # Manifest + parity + plugin.json + README-table + skill-provenance guard (single source of truth; run locally before pushing)
+├── validate-manifests.sh       # Manifest + parity + plugin.json + catalogue-table + skill-provenance guard (single source of truth; run locally before pushing)
 ├── validate-manifests.test.sh  # Self-test: PASS a consistent fixture, FAIL each drift scenario the guard catches
 ├── check-plugin-version-bump.sh      # Gate: a plugin whose shipped content changed must move its version
 ├── check-plugin-version-bump.test.sh # Self-test for the gate above
@@ -51,11 +51,14 @@ scripts/
 ├── refresh-desired-state-digests.sh      # Writer: recompute every digest a *.desired-state.json pins (the fix "digest must match" points at)
 ├── refresh-desired-state-digests.test.sh # Self-test for the generator, incl. its coupling to the validator
 └── sha256.lib.sh               # The two hashing rules, sourced by BOTH the validator and the generator so they cannot drift
-README.md                       # Human-facing index — the plugin table + per-tool install instructions
+README.md                       # Short introduction and getting started
+docs/plugins.md                 # Validated plugin catalogue and resource inventory
+docs/installation.md            # Per-tool installation instructions
+docs/resources.md               # Bundled servers, agents, and onboarding
 ```
 
-See [README.md](README.md) for the plugin catalogue and the per-tool
-[Installation](README.md#installation) instructions.
+See the [plugin catalogue](docs/plugins.md) and the per-tool
+[installation instructions](docs/installation.md).
 
 ## The two marketplace manifests are the contract
 
@@ -71,7 +74,7 @@ same `name`/`description`/`version` and `source` `./plugins/<name>`) plus an equ
 requires the canonical nested path in strict mode even though the local Claude CLI and Copilot accept
 the top-level manifest; CI normalises and compares both copies so they cannot drift. No
 `plugins/<name>/` may exist without a manifest entry. CI also
-checks the human-facing **README plugin table** against the filesystem: every plugin has a table row
+checks the human-facing **plugin catalogue table** against the filesystem: every plugin has a table row
 (and vice versa) and each row's **Resources** column matches that plugin's bundled resources — its
 on-disk `skills/` directories, any MCP server keys in an optional `plugins/<name>/.mcp.json`, and any
 custom-agent entries in an optional `plugins/<name>/agents/` — so the catalogue a reader sees can never
@@ -86,7 +89,7 @@ missing persisted entries, active names used as rename sources, dangling targets
 chain must end at a current plugin name or `null` for an intentional removal.
 
 Ancillary desired-state documents under `plugins/<name>/resources/*.desired-state.json` are not
-auto-discovered plugin components and therefore are not counted in the README Resources column. CI
+auto-discovered plugin components and therefore are not counted in the catalogue Resources column. CI
 validates their provider-neutral schema, required consumer contract, lack of placeholders, and explicit
 link from the owning plugin README. Agentic-engineering desired state must include the complete set of
 thin schedule prompts validated by the script; schedule prompts point to canonical role sources and do
@@ -104,7 +107,7 @@ a hermetic `*.test.sh` next to it that stubs any external tool on `PATH` (no net
 asserts the script's contract. The `lint-scripts` CI job auto-discovers both locations — shellcheck
 over every script, then every `*.test.sh` — so a new script and its test are picked up without editing
 the workflow. A `scripts/` directory is a helper location, not an auto-discovered plugin resource: it
-never satisfies the minimum-one-resource rule and is not listed in the README Resources column.
+never satisfies the minimum-one-resource rule and is not listed in the catalogue Resources column.
 
 Each entry's `source` is a **relative path** (`./plugins/<name>`), so the repo rename
 (`copilot-plugins` → `agent-plugins`, see [#7](https://github.com/devantler-tech/agent-plugins/issues/7)) and any
@@ -192,7 +195,7 @@ plugin membership) is authored here.
    version must agree (the portable and strict manifests plus both marketplace entries) — a hand-edit
    easily half-lands. The `Check version bump` CI job enforces it on every PR, and the daily skill-sync
    workflow bumps itself via `--changed-since` so the automated update PR satisfies the gate unaided.
-9. **README and manifests stay in lockstep.** The README plugin table mirrors the manifests; update it
+9. **Catalogue and manifests stay in lockstep.** The [plugin catalogue table](docs/plugins.md) mirrors the manifests; update it
    in the same PR whenever the plugin set changes. CI enforces this: every plugin has a table row and
    vice versa, and each row's **Resources** column matches that plugin's bundled resources on disk — its
    `skills/` directories, any `.mcp.json` server keys, and any `agents/` entries (the **Description**
@@ -210,7 +213,7 @@ runs once after installation and remains required. `scripts/install-skills-ref.t
 recovery and failure offline in `lint-scripts`.
 
 ```bash
-# 1. Marketplace parity, portable ↔ strict-Claude plugin.json parity, README table,
+# 1. Marketplace parity, portable ↔ strict-Claude plugin.json parity, catalogue table,
 #    desired-state resources, and skill provenance — the exact checks CI's
 #    "Validate manifests" job runs.
 ./scripts/validate-manifests.sh
