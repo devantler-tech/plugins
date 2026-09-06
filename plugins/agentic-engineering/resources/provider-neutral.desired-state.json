@@ -18,7 +18,7 @@
         },
         {
           "path": "scripts/forge-readonly-guard.sh",
-          "sha256": "9591835448efc0d8f08f83da48deacc9a50079f4df79e9db7ed91d9146dd3649",
+          "sha256": "80bd20ba36537dc33ca21c003e4708731a0e0ab9f52f4ac320be322cb348ca6b",
           "executable": true
         },
         {
@@ -61,7 +61,7 @@
       "portfolio-surveyor": {
         "enabled": true,
         "mode": "delegated-read-only",
-        "definitionSha256": "f671faa85d7749bc22ee29fde2fe737dbf409c9bc17c55a4dc324e3ee966f504"
+        "definitionSha256": "e3a88b11ceb111ffae86f250f9fd468441bad575db57c2329b191affbf756563"
       },
       "agent-improver": {
         "enabledWhen": "Both optional consumer contract sections are present",

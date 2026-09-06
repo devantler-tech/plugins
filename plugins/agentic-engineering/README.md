@@ -296,7 +296,15 @@ provider-neutral desired-state entry pins the plugin-relative path, reviewed SHA
 requirement. The
 guard accepts only the exact classifier beside itself and only `--repo`, `--branch`, and a full
 `--head-sha`; it refuses the helper's offline `--input` mode. Resolve both scripts from the same
-installed, reviewed plugin directory. The classifier captures its fixed paginated API GET in memory,
+installed, reviewed plugin directory. Preflight may supply the literal absolute classifier path.
+Otherwise, one bare `classify-default-branch-ci-runs.sh` probe through the active guard is a denied
+discovery request: it executes nothing and returns `classifier-path-json:` with a JSON string naming
+the guard's own executable sibling. The adapter preserves this record in its denial reason and
+stderr. Decode it as data, quote the decoded path as one literal shell argument, and submit the
+remote-mode command through the same guard. Never evaluate the record or use JSON double quotes as
+shell quoting. Missing JSON tooling, a missing executable, or an absent, malformed, ambiguous, or
+unusable hint leaves classification `QUERY-UNKNOWN`; directory searches and fallback roots are not
+part of discovery. The classifier captures its fixed paginated API GET in memory,
 so this exception neither writes an intermediate file nor permits an arbitrary local executable.
 
 **Three residues the guard cannot close from argv alone — the calling runtime must.** They are stated

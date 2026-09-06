@@ -229,6 +229,71 @@ else
   fi
 fi
 
+# Discover through the real adapter, then admit and execute the returned literal
+# path. Relocating the installation must not require knowing a versioned root.
+# Only the external forge response is stubbed; neither guard nor classifier is.
+mkdir -p "$TMP/forge-bin"
+cat >"$TMP/forge-bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = 'api --paginate --slurp --method GET repos/owner/repo/actions/runs -f head_sha=1111111111111111111111111111111111111111 -f branch=main -F per_page=100' ] || exit 1
+printf '%s\n' '{"total_count":1,"workflow_runs":[{"id":10,"workflow_id":11,"event":"push","conclusion":"failure","created_at":"2026-07-14T09:00:00Z","html_url":"https://example.test/fail","name":"CI"}]}'
+EOF
+chmod +x "$TMP/forge-bin/gh"
+for install_dir in "$TMP/install-v1" "$TMP/relocated plugin 'quoted' \$literal"; do
+  mkdir -p "$install_dir"
+  install_dir=$(CDPATH='' cd -- "$install_dir" && pwd -P)
+  cp "$GUARD" "$WRAPPER" "$HERE/classify-default-branch-ci-runs.sh" "$install_dir/"
+  for probe in 'classify-default-branch-ci-runs.sh' '/incorrect/install/classify-default-branch-ci-runs.sh'; do
+    st=0
+    out=$(run_wrapper "$(hook_stdin "$probe")" "$install_dir/surveyor-forge-readonly.sh" 2>"$TMP/discovery.err") || st=$?
+    reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+    resolved=$(printf '%s' "$reason" | jq -Rse '
+      split("\n") | map(select(startswith("classifier-path-json: ")))
+      | if length == 1 then .[0] | ltrimstr("classifier-path-json: ") | fromjson
+        else error("missing or ambiguous classifier path") end' -r 2>/dev/null) || resolved=''
+    if [ "$st" -eq 2 ] && [ "$resolved" = "$install_dir/classify-default-branch-ci-runs.sh" ] &&
+      [ "$(cat "$TMP/discovery.err")" = "$reason" ]; then
+      pass
+    else
+      fail "discovery must deny and carry the exact relocated path in JSON and stderr (st=$st)"
+      continue
+    fi
+    # @sh produces one literal shell word, preserving quotes and dollar signs.
+    # This is not eval: only the complete command that passed the guard runs.
+    quoted=$(printf '%s' "$resolved" | jq -Rs '@sh' -r)
+    cmd="$quoted --repo owner/repo --branch main --head-sha 1111111111111111111111111111111111111111"
+    if run_wrapper "$(hook_stdin "$cmd")" "$install_dir/surveyor-forge-readonly.sh" >/dev/null 2>&1; then
+      st=0
+      result=$(PATH="$TMP/forge-bin:$PATH" bash -c "$cmd" 2>"$TMP/classifier.err") || st=$?
+      if [ "$st" -eq 0 ] && [ "$result" = $'11\tfailure\thttps://example.test/fail\tCI\tpush\t\t2026-07-14T09:00:00Z\t10' ]; then
+        pass
+      else
+        fail "discovered guarded classifier must return the named red workflow (st=$st)"
+      fi
+    else
+      fail "the discovered literal remote-mode command must be admitted"
+    fi
+    st=0
+    run_wrapper "$(hook_stdin "$quoted --input -")" "$install_dir/surveyor-forge-readonly.sh" >/dev/null 2>&1 || st=$?
+    if [ "$st" -eq 2 ]; then pass; else fail 'discovery must not admit offline input'; fi
+  done
+  for availability in nonexecutable missing; do
+    if [ "$availability" = nonexecutable ]; then
+      chmod -x "$install_dir/classify-default-branch-ci-runs.sh"
+    else
+      rm "$install_dir/classify-default-branch-ci-runs.sh"
+    fi
+    st=0
+    out=$(run_wrapper "$(hook_stdin 'classify-default-branch-ci-runs.sh')" "$install_dir/surveyor-forge-readonly.sh" 2>/dev/null) || st=$?
+    if [ "$st" -eq 2 ] && ! printf '%s' "$out" | grep -q 'classifier-path-json:'; then
+      pass
+    else
+      fail "a $availability classifier must deny without a usable path hint"
+    fi
+  done
+done
+
 # --- agent scoping (opt-in): SURVEYOR_FORGE_READONLY_SCOPE ---
 #
 # A PreToolUse `matcher` filters on tool name only, so a Bash matcher fires for
