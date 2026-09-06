@@ -43,7 +43,7 @@ set -uo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-usage: recheck-open-prs.sh --repo OWNER/NAME [--base BRANCH] [--dry-run]
+usage: recheck-open-prs.sh --repo OWNER/NAME [--base BRANCH] [--required-check NAME] [--dry-run]
 EOF
   exit 2
 }
@@ -51,6 +51,10 @@ EOF
 repo=""
 base="main"
 dry_run=0
+# The check whose fresh run proves the reopen has been picked up. Named rather than "any check",
+# because another integration's run would otherwise satisfy the wait while the required
+# workflow's own run for the reopen still did not exist.
+required_check="CI - Required Checks"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -62,6 +66,11 @@ while [ "$#" -gt 0 ]; do
     --base)
       [ "$#" -ge 2 ] || usage
       base=$2
+      shift 2
+      ;;
+    --required-check)
+      [ "$#" -ge 2 ] || usage
+      required_check=$2
       shift 2
       ;;
     --dry-run)
@@ -80,6 +89,15 @@ case "$repo" in
   */*) ;;
   *) usage ;;
 esac
+
+# The name is interpolated into a jq program, so a quote or backslash in it would change that
+# program rather than the value it compares against.
+if [ -z "$required_check" ] \
+  || [ "${required_check//\"/}" != "$required_check" ] \
+  || [ "${required_check//\\/}" != "$required_check" ]; then
+  echo "recheck-open-prs: --required-check must be a plain name (no quotes or backslashes)" >&2
+  exit 2
+fi
 
 command -v gh > /dev/null 2>&1 || {
   echo "recheck-open-prs: gh is required" >&2
@@ -147,10 +165,18 @@ settle() {
   rm -rf "$state"
 }
 
-# The highest check-run id at a commit, or 0. Ids increase, so a larger one later means a NEW
-# run exists — which needs no clock and no assumption about either side's timekeeping.
+# The highest id among check runs NAMED $required_check at a commit, or 0 when it has none. Ids
+# increase, so a larger one later means a new run of that check exists — which needs no clock and
+# no assumption about either side's timekeeping.
+#
+# Filtered by name on purpose. Any check run would satisfy an unfiltered comparison, including one
+# another integration or a manual rerun created after the baseline, so the wait could pass while
+# the required workflow's own run for the reopen still did not exist.
+#
+# Exits non-zero when the read fails, so a caller can tell "no runs yet" (0) from "unknown".
 newest_check() {
-  gh api "repos/${repo}/commits/$1/check-runs" --jq '[.check_runs[].id] | max // 0' 2> /dev/null
+  gh api "repos/${repo}/commits/$1/check-runs" \
+    --jq "[.check_runs[] | select(.name == \"${required_check}\") | .id] | max // 0" 2> /dev/null
 }
 
 # Block until a check run newer than $2 exists at commit $1. Auto-merge means "merge once the
@@ -161,11 +187,15 @@ newest_check() {
 # must restore is recoverable, a merge that skipped a gate is not.
 await_fresh_check() {
   local sha=$1 baseline=$2 waited=0 now
+  # An absent sha or baseline is unknown, not zero: comparing against an invented lower bound
+  # would let any historical run satisfy the wait immediately.
   [ -n "$sha" ] || return 1
+  case "$baseline" in '' | *[!0-9]*) return 1 ;; esac
   while [ "$waited" -lt "$CHECK_WAIT_SECONDS" ]; do
-    now=$(newest_check "$sha")
-    case "$now" in '' | *[!0-9]*) now=0 ;; esac
-    [ "$now" -gt "$baseline" ] && return 0
+    # A failed poll is "not yet", never "satisfied" — the loop simply keeps waiting.
+    if now=$(newest_check "$sha") && case "$now" in '' | *[!0-9]*) false ;; *) true ;; esac; then
+      [ "$now" -gt "$baseline" ] && return 0
+    fi
     sleep "$CHECK_POLL_SECONDS"
     waited=$((waited + CHECK_POLL_SECONDS))
   done
@@ -275,11 +305,21 @@ while IFS=$'\t' read -r number title; do
     printf '%s' "$snapshot" | jq -r '.autoMergeRequest.commitHeadline // ""' > "$state/rearm/$number/headline"
     printf '%s' "$snapshot" | jq -r '.autoMergeRequest.commitBody // ""' > "$state/rearm/$number/body"
     head_sha=$(printf '%s' "$snapshot" | jq -r '.headRefOid // ""')
+    # The high-water mark of the required check at this commit BEFORE the reopen, so "a run from
+    # the reopen exists" is answerable afterwards without trusting any clock.
+    #
+    # A failed read leaves the PR untouched rather than assuming 0: a zero baseline is satisfied
+    # by any historical run, so the wait would pass instantly and re-arm against the pre-gate
+    # green — recreating the merge window this capture exists to close.
+    if ! check_baseline=$(newest_check "$head_sha") \
+      || case "$check_baseline" in '' | *[!0-9]*) true ;; *) false ;; esac \
+      || [ -z "$head_sha" ]; then
+      echo "::error::#$number check baseline could not be read; left untouched (its auto-merge could not be safely restored)"
+      rm -rf "$state/rearm/$number"
+      failed=$((failed + 1))
+      continue
+    fi
     printf '%s' "$head_sha" > "$state/rearm/$number/sha"
-    # The high-water mark of check runs at this commit BEFORE the reopen, so "a run from the
-    # reopen exists" is answerable afterwards without trusting any clock.
-    check_baseline=$(newest_check "$head_sha")
-    case "$check_baseline" in '' | *[!0-9]*) check_baseline=0 ;; esac
     printf '%s' "$check_baseline" > "$state/rearm/$number/baseline"
   fi
 

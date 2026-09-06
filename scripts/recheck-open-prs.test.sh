@@ -53,10 +53,14 @@ verb="\$1 \$2"
 # fields, never spliced into the path, or a branch name containing & or # would select something
 # else entirely.
 if [ "\$1" = "api" ] && case "\$2" in *check-runs) true;; *) false;; esac; then
-  printf '%s\n' "api check-runs" >> "\$log"
-  # Ids grow after a reopen, exactly as Actions creates a new run for the new event.
-  bumps=\$(cat "\$db/checkbump" 2>/dev/null || printf '0')
-  printf '%s\n' "\$bumps"
+  printf '%s\n' "api check-runs \$*" >> "\$log"
+  [ -f "\$db/checkfail" ] && exit 1
+  # The script filters by the required check's name, so an id only counts when the query asks
+  # for that name. A run from some OTHER integration must not satisfy the wait.
+  case "\$*" in
+    *"CI - Required Checks"*) printf '%s\n' "\$(cat "\$db/checkbump" 2>/dev/null || printf '0')" ;;
+    *) printf '%s\n' "\$(cat "\$db/othercheck" 2>/dev/null || printf '0')" ;;
+  esac
   exit 0
 fi
 
@@ -464,6 +468,48 @@ if [ "$(left_closed "$d")" -eq 0 ]; then
   ok "declining to re-arm still leaves the PR open"
 else
   bad "declining to re-arm still leaves the PR open" "$(left_closed "$d") still closed"
+fi
+
+# --- another integration's check does not satisfy the wait ---------------
+# The wait must observe a new run of the REQUIRED check. Any-check-counts would pass while the
+# required workflow's own run for the reopen still did not exist, and re-arm against the
+# pre-gate green.
+d="$WORK/othercheck"
+make_gh "$d" "$TWO_PRS" "" "11"
+python3 - "$d/bin/gh" <<'PYEOF'
+import sys
+p=sys.argv[1]
+s=open(p).read()
+# The required check never gains a run; an unrelated integration's does.
+s=s.replace('printf \'%s\' "$(( $(cat "$db/checkbump" 2>/dev/null || printf \'0\') + 1 ))" > "$db/checkbump"',
+            'printf \'%s\' "$(( $(cat "$db/othercheck" 2>/dev/null || printf \'0\') + 1 ))" > "$db/othercheck"')
+open(p,"w").write(s)
+PYEOF
+out=$(run_script "$d")
+rc=$?
+if [ "$rc" -eq 1 ] && [ "$(grep -c 'pr merge 11' "$d/calls.log")" -eq 0 ] \
+  && [ "$(left_closed "$d")" -eq 0 ]; then
+  ok "a new check from another integration does not satisfy the wait"
+else
+  bad "a new check from another integration does not satisfy the wait" \
+    "exit $rc" "$(cat "$d/calls.log")" "$out"
+fi
+
+# --- an unreadable check baseline leaves the PR untouched ----------------
+# Treating an unknown baseline as 0 would let any historical run satisfy the wait instantly,
+# re-arming against the pre-gate green — the window the baseline exists to close.
+d="$WORK/baselinefail"
+make_gh "$d" "$TWO_PRS" "" "11"
+: > "$d/db/checkfail"
+out=$(run_script "$d")
+rc=$?
+if [ "$rc" -eq 1 ] && [ "$(grep -c 'pr close 11' "$d/calls.log")" -eq 0 ] \
+  && [ "$(grep -c 'pr merge 11' "$d/calls.log")" -eq 0 ] \
+  && [[ $out == *"check baseline could not be read"* ]]; then
+  ok "an unreadable check baseline leaves the PR untouched, never assumed zero"
+else
+  bad "an unreadable check baseline leaves the PR untouched, never assumed zero" \
+    "exit $rc" "$(cat "$d/calls.log")" "$out"
 fi
 
 # --- a malformed listing is an error, never a shorter list ---------------
