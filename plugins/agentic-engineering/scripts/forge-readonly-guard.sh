@@ -192,6 +192,28 @@ GH_VERB_VALUE_FLAGS=" -R --repo --state --limit -L --json --jq -q --search --aut
 # independent rules that fire earlier, and neither is widened by an explicit GET.
 GH_API_FIELD_FLAGS=" -f --raw-field -F --field --input "
 
+# Value grammars that legitimately begin with a dash. A value-taking flag consumes the
+# next word whatever it looks like — gh's flag parser and git's alike — so `--repo --web`
+# never reaches gh as a flag. That inertness lives in a parser the guard does not assert,
+# and it stops holding the day any value flag grows an optional-value grammar. So the
+# guard classifies the consumed word itself (check_consumed_value): a flag-shaped value
+# is denied by name unless its flag is listed here, where a leading dash is part of the
+# value's own grammar and the value can name no program, host, or file:
+#   --search       a server-side query expression (`-label:foo` negates a qualifier)
+#   --label, --milestone   free-form server-side filter strings — a label or milestone
+#                  title may itself begin with a dash (`--label -bug`)
+#   --jq / -q      a jq program (`-1`, `-(.x)`) run by gh's embedded jq; its reach into
+#                  the process environment is refused separately by check_gh_flag_value
+#   --template/-t  a Go template rendered locally, with no exec or file primitive
+#   git --grep, -S, -G, --author, --committer   a regex or pickaxe string matched
+#                  against history (`--author -bot` matches authors containing `-bot`)
+#   git --since, --until, --after, --before     a date expression, which git's
+#                  approxidate parser accepts in free form (`--since -yesterday`)
+# Everything else — a count, a path, a ref, a format name — has a grammar no
+# dash-letter word can satisfy, so a flag-shaped value there is denied by name.
+GH_DASH_VALUE_FLAGS=" --search --label --milestone --jq -q --template -t "
+GIT_DASH_VALUE_FLAGS=" --grep -S -G --author --committer --since --until --after --before "
+
 # git options. Read verbs are not enough on their own: several options make git
 # write a file or execute a program without any shell syntax for the scanner to
 # catch, so options are allowlisted like everything else.
@@ -743,6 +765,7 @@ classify_gh_api() {
     if [ "$FLAG_HAS_VALUE" -eq 0 ]; then
       if [ $((i + 1)) -ge "$n" ]; then deny "gh api $name needs a value"; fi
       val=${WORDS[$((i + 1))]}
+      check_consumed_value 'gh api' "$GH_DASH_VALUE_FLAGS" "$name" "$val"
       i=$((i + 1))
     fi
 
@@ -849,6 +872,29 @@ check_gh_flag_value() {
   esac
 }
 
+# A word consumed as a flag's value that is itself flag-shaped. Only a flag whose value
+# grammar begins with a dash ($2 names that family's set) may take it; for every other
+# flag the guard would be handing a flag it never classified to a parser it does not
+# assert. Denied by name, so the message points at the word to remove.
+#
+# Flag-shaped means a dash followed by a letter or a second dash. A dash followed by a
+# digit is a NUMBER, never a flag — `--max-count -1` (unlimited), `-n -1`, and the
+# relative date `--since -1.day` are all documented, read-only git grammars — so it is
+# admitted for every value flag: no flag's name starts with a digit, so nothing the
+# guard classifies can hide behind one.
+check_consumed_value() {
+  local prog=$1 dash_flags=$2 name=$3 val=$4
+  case "$val" in
+    -[0-9]*) ;;
+    -?*)
+      case "$dash_flags" in
+        *" $name "*) ;;
+        *) deny "$prog $name consumed '$val' as its value, but that word is flag-shaped and $name takes no dash-leading value; the guard classifies it as a flag rather than trusting the parser to keep it inert" ;;
+      esac
+      ;;
+  esac
+}
+
 check_gh_verb_flags() {
   local i=1 w name val
   local n=${#WORDS[@]}
@@ -903,6 +949,7 @@ check_gh_verb_flags() {
           fi
           if [ $((i + 1)) -ge "$n" ]; then deny "gh $name needs a value"; fi
           val=${WORDS[$((i + 1))]}
+          check_consumed_value gh "$GH_DASH_VALUE_FLAGS" "$name" "$val"
           check_gh_flag_value "$name" "$val"
           i=$((i + 1))
           ;;
@@ -1192,7 +1239,12 @@ classify_git() {
 
     if [ "$FLAG_HAS_VALUE" -eq 0 ]; then
       case "$GIT_OK_VALUE_FLAGS" in
-        *" $name "*) i=$((i + 1)) ;;
+        *" $name "*)
+          if [ $((i + 1)) -lt "${#WORDS[@]}" ]; then
+            check_consumed_value git "$GIT_DASH_VALUE_FLAGS" "$name" "${WORDS[$((i + 1))]}"
+          fi
+          i=$((i + 1))
+          ;;
       esac
     fi
     i=$((i + 1))
